@@ -174,7 +174,7 @@ Para una verificación paso a paso en una máquina limpia sin software instalado
    - Si lo deseas, introduce un **Nombre personalizado** (el sistema sanitizará automáticamente cualquier carácter especial no admitido).
    - Selecciona el **Tipo** (Vídeo o Audio). El selector de formato y calidad se actualizará para ofrecer solo opciones válidas.
    - Selecciona la **Carpeta de destino** deseada (por defecto tu carpeta personal de Descargas).
-   - Haz clic en **Añadir a la cola** (o presiona Enter). El formulario se restablecerá de inmediato permitiéndote ingresar el siguiente enlace.
+   - Haz clic en **Descargar** (o presiona Enter). La tarea se encolará de inmediato y el formulario se restablecerá permitiéndote ingresar el siguiente enlace.
 
 2. **Seguimiento del progreso**:
    - La tarea se añadirá al panel derecho en estado *En espera*.

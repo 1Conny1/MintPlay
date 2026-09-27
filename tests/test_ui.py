@@ -7,9 +7,12 @@ from mintplay.domain.models import (
     EstadoTrabajo,
     FaseTrabajo,
     OpcionesDescarga,
+    RegistroHistorial,
     TipoMedio,
     TrabajoDescarga,
 )
+from mintplay.domain.platforms import resolver_plataforma
+from mintplay.services.persistence import cargar_configuracion
 from mintplay.services.queue_manager import GestorCola
 from mintplay.services.runtime_paths import obtener_ruta_icono
 from mintplay.ui.download_form import (
@@ -17,9 +20,15 @@ from mintplay.ui.download_form import (
     estimar_plataforma_url,
     traducir_etiqueta_calidad,
 )
-from mintplay.ui.i18n_manager import obtener_traductor, t
+from mintplay.ui.history_dialog import TarjetaHistorial
+from mintplay.ui.i18n_manager import (
+    crear_cuadro_confirmacion_si_no,
+    obtener_traductor,
+    t,
+)
 from mintplay.ui.job_card import TarjetaTrabajo
 from mintplay.ui.main_window import VentanaPrincipal
+from mintplay.ui.settings_dialog import DialogoAjustes
 from mintplay.ui.theme import cargar_icono_svg, generar_hoja_estilos
 
 
@@ -42,13 +51,90 @@ def test_estimar_plataforma_url():
     obtener_traductor("es").cambiar_idioma("es")
     assert estimar_plataforma_url("") == t("waiting_url")
     assert estimar_plataforma_url("invalid_url") == t("waiting_url")
+    # Enlace exacto de Facebook Reel de la captura y variantes de Facebook
+    assert (
+        estimar_plataforma_url("https://www.facebook.com/reel/1386830136202564")
+        == "Facebook"
+    )
+    assert estimar_plataforma_url("https://facebook.com/watch/?v=12345") == "Facebook"
+    assert estimar_plataforma_url("https://m.facebook.com/reel/1386830136202564") == "Facebook"
+    assert estimar_plataforma_url("https://fb.watch/abc123xyz/") == "Facebook"
+    assert (
+        estimar_plataforma_url("https://www.facebook.com:443/reel/1386830136202564")
+        == "Facebook"
+    )
+    # Falsos positivos por subcadena no deben clasificarse como Facebook ni YouTube
+    assert (
+        estimar_plataforma_url("https://notfacebook.com/reel/1386830136202564")
+        == "Otro sitio"
+    )
+    assert (
+        estimar_plataforma_url("https://facebook.com.attacker.org/reel/1")
+        == "Otro sitio"
+    )
+    assert estimar_plataforma_url("https://myyoutube.com/watch?v=123") == "Otro sitio"
+
+    # Resto de plataformas conocidas
     assert estimar_plataforma_url("https://www.youtube.com/watch?v=123") == "YouTube"
     assert estimar_plataforma_url("https://youtu.be/123") == "YouTube"
     assert estimar_plataforma_url("https://vimeo.com/12345") == "Vimeo"
     assert estimar_plataforma_url("https://soundcloud.com/artist/track") == "SoundCloud"
     assert estimar_plataforma_url("https://www.tiktok.com/@user/video/123") == "TikTok"
     assert estimar_plataforma_url("https://x.com/user/status/123") == "X / Twitter"
+    assert estimar_plataforma_url("https://www.instagram.com/reel/xyz/") == "Instagram"
+    assert estimar_plataforma_url("https://www.reddit.com/r/videos/comments/1") == "Reddit"
+    assert estimar_plataforma_url("https://clips.twitch.tv/clip123") == "Twitch"
     assert estimar_plataforma_url("https://example.com/media.mp4") == "Otro sitio"
+
+
+def test_plataforma_consistente_en_formulario_cola_historial_y_extractor(
+    qapp, tmp_path: Path
+):
+    """Verifica que el enlace de Facebook Reel muestre 'Facebook' en formulario, cola e historial."""
+    obtener_traductor("es").cambiar_idioma("es")
+    url_fb = "https://www.facebook.com/reel/1386830136202564"
+
+    # 1. Al pegar en el formulario
+    form = FormularioDescarga(str(tmp_path))
+    form.txt_url.setText(url_fb)
+    assert form.lbl_chip.text() == "Facebook"
+
+    # 2. En tarjeta de cola
+    opciones = OpcionesDescarga(
+        url=url_fb,
+        custom_name="",
+        media_type=TipoMedio.VIDEO,
+        target_extension="mp4",
+        quality_choice="best",
+        destination_dir=str(tmp_path),
+    )
+    trabajo = TrabajoDescarga.desde_opciones(opciones)
+    assert trabajo.platform_hint == "Facebook"
+    card_cola = TarjetaTrabajo(trabajo)
+    assert card_cola.lbl_plataforma.text() == "Facebook"
+
+    # 3. Un extractor genérico nunca degrada una plataforma conocida a 'Otro sitio'
+    assert (
+        resolver_plataforma(
+            url=url_fb, extractor_key="Generic", plataforma_actual="Facebook"
+        )
+        == "Facebook"
+    )
+    assert (
+        resolver_plataforma(
+            url=url_fb, extractor_key="FacebookReel", plataforma_actual="Otro sitio"
+        )
+        == "Facebook"
+    )
+
+    # 4. En tarjeta de historial
+    trabajo.status = EstadoTrabajo.COMPLETADO
+    trabajo.output_path = str(tmp_path / "reel.mp4")
+    reg_hist = RegistroHistorial.desde_trabajo(trabajo)
+    assert reg_hist.platform_hint == "Facebook"
+    card_hist = TarjetaHistorial(reg_hist)
+    assert card_hist.lbl_plataforma.text() == "Facebook"
+
 
 
 def test_formulario_validacion_url_invalida(qapp, tmp_path: Path):
@@ -265,3 +351,115 @@ def test_generar_hojas_estilo():
     qss_light = generar_hoja_estilos("light")
     assert "#F5F8F3" in qss_light
     assert "#168569" in qss_light
+
+
+def test_boton_descargar_y_texto_cola_vacia_es_en(qapp, tmp_path: Path):
+    """Verifica que el botón principal diga Descargar/Download y el estado vacío esté actualizado."""
+    with patch(
+        "mintplay.services.persistence.obtener_directorio_datos_usuario",
+        return_value=tmp_path,
+    ):
+        traductor = obtener_traductor("es")
+        traductor.cambiar_idioma("es")
+        gestor = GestorCola(ServicioInerte())
+        ventana = VentanaPrincipal(
+            gestor,
+            {"idioma": "es", "tema": "dark", "directorio_descargas": str(tmp_path)},
+        )
+
+        assert ventana.formulario.btn_anadir.text() == "Descargar"
+        assert ventana.formulario.btn_anadir.accessibleName() == "Descargar"
+        assert "«Descargar»" in ventana.panel_cola.lbl_vacio_desc.text()
+        assert "Añadir a la cola" not in ventana.panel_cola.lbl_vacio_desc.text()
+
+        ventana._alternar_idioma()
+        assert ventana.formulario.btn_anadir.text() == "Download"
+        assert ventana.formulario.btn_anadir.accessibleName() == "Download"
+        assert '"Download"' in ventana.panel_cola.lbl_vacio_desc.text()
+        assert "Add to queue" not in ventana.panel_cola.lbl_vacio_desc.text()
+
+        traductor.cambiar_idioma("es")
+        gestor.cerrar()
+
+
+def test_confirmaciones_traducidas_si_no_es_en(qapp):
+    """Verifica que los diálogos de confirmación usen botones explícitos Sí/No en ES y Yes/No en EN."""
+    traductor = obtener_traductor("es")
+    traductor.cambiar_idioma("es")
+
+    cuadro_es, btn_si_es, btn_no_es = crear_cuadro_confirmacion_si_no(
+        None,
+        t("confirm_clear_history_title"),
+        t("confirm_clear_history_message"),
+    )
+    assert btn_si_es.text() == "Sí"
+    assert btn_no_es.text() == "No"
+    assert cuadro_es.defaultButton() == btn_no_es
+    assert cuadro_es.escapeButton() == btn_no_es
+    assert "NO se borrarán" in cuadro_es.text()
+
+    traductor.cambiar_idioma("en")
+    cuadro_en, btn_si_en, btn_no_en = crear_cuadro_confirmacion_si_no(
+        None,
+        t("confirm_clear_history_title"),
+        t("confirm_clear_history_message"),
+    )
+    assert btn_si_en.text() == "Yes"
+    assert btn_no_en.text() == "No"
+    assert cuadro_en.defaultButton() == btn_no_en
+    assert cuadro_en.escapeButton() == btn_no_en
+    assert "NOT be deleted" in cuadro_en.text()
+
+    traductor.cambiar_idioma("es")
+
+
+def test_selector_idioma_ajustes_segmentado_y_sincronizado(qapp, tmp_path: Path):
+    """Prueba ES -> EN -> ES con Ajustes e Historial abiertos, verificando sincronización y persistencia."""
+    with patch(
+        "mintplay.services.persistence.obtener_directorio_datos_usuario",
+        return_value=tmp_path,
+    ):
+        traductor = obtener_traductor("es")
+        traductor.cambiar_idioma("es")
+        gestor = GestorCola(ServicioInerte())
+        cfg = {"idioma": "es", "tema": "dark", "directorio_descargas": str(tmp_path)}
+        ventana = VentanaPrincipal(gestor, cfg)
+
+        dlg_hist = ventana._abrir_historial()
+        dlg_ajustes = DialogoAjustes(ventana.config, ventana)
+        dlg_ajustes.configuracion_guardada.connect(ventana._al_actualizar_ajustes)
+
+        # Estado inicial en Español
+        assert dlg_ajustes.btn_idioma_es.text() == "Español"
+        assert dlg_ajustes.btn_idioma_en.text() == "English"
+        assert dlg_ajustes.btn_idioma_es.isChecked() is True
+        assert dlg_ajustes.btn_idioma_en.isChecked() is False
+        assert dlg_ajustes.btn_cerrar.text() == "Cerrar"
+        assert ventana.btn_idioma.text() == "Español"
+
+        # Cambiar a English desde Ajustes
+        dlg_ajustes.seleccionar_idioma("en")
+        assert dlg_ajustes.btn_idioma_en.isChecked() is True
+        assert dlg_ajustes.btn_idioma_es.isChecked() is False
+        assert dlg_ajustes.btn_cerrar.text() == "Close"
+        assert ventana.btn_idioma.text() == "English"
+        assert ventana.formulario.btn_anadir.text() == "Download"
+        assert dlg_hist.lbl_titulo.text() == "Download History"
+        assert dlg_hist.btn_vaciar.text() == "Clear history"
+        assert cargar_configuracion()["idioma"] == "en"
+
+        # Cambiar de vuelta a Español desde el control rápido del encabezado
+        ventana._alternar_idioma()
+        assert ventana.btn_idioma.text() == "Español"
+        assert dlg_ajustes.btn_idioma_es.isChecked() is True
+        assert dlg_ajustes.btn_idioma_en.isChecked() is False
+        assert dlg_ajustes.btn_cerrar.text() == "Cerrar"
+        assert ventana.formulario.btn_anadir.text() == "Descargar"
+        assert dlg_hist.lbl_titulo.text() == "Historial de descargas"
+        assert dlg_hist.btn_vaciar.text() == "Vaciar historial"
+        assert cargar_configuracion()["idioma"] == "es"
+
+        dlg_ajustes.close()
+        dlg_hist.close()
+        gestor.cerrar()
+

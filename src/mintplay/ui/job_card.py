@@ -244,7 +244,7 @@ class TarjetaTrabajo(QFrame):
         # Título y plataforma traducida
         self._titulo_completo = trabajo.display_title or trabajo.url
         self._aplicar_elision_titulo()
-        self.lbl_plataforma.setText(traducir_plataforma(trabajo.platform_hint))
+        self.lbl_plataforma.setText(traducir_plataforma(trabajo.platform_hint, trabajo.url))
 
         # Resumen técnico traducido (Vídeo/Audio · Formato · Calidad traducida)
         tipo_texto = t("type_video") if trabajo.media_type.value == "video" else t("type_audio")
@@ -414,7 +414,11 @@ class TarjetaTrabajo(QFrame):
     def _mostrar_detalles(self) -> None:
         if self._error_detail:
             msg = QMessageBox(self)
+            ventana = self.window()
+            if ventana is not None and ventana.styleSheet():
+                msg.setStyleSheet(ventana.styleSheet())
             msg.setWindowTitle(t("btn_details"))
             msg.setText(self._error_detail)
             msg.setIcon(QMessageBox.Information)
+            msg.addButton(t("btn_ok"), QMessageBox.AcceptRole)
             msg.exec()

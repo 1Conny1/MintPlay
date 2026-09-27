@@ -34,6 +34,12 @@ from ..domain.models import (
     OpcionesDescarga,
     TipoMedio,
 )
+from ..domain.platforms import (
+    PLATAFORMA_GENERICA,
+    detectar_plataforma_por_url,
+    extraer_host_normalizado,
+    resolver_plataforma,
+)
 from ..services.output_paths import sanitizar_nombre_archivo
 from .i18n_manager import obtener_traductor, t
 
@@ -55,42 +61,23 @@ def traducir_etiqueta_calidad(cal: str) -> str:
     return mapa.get(cal, cal)
 
 
-def traducir_plataforma(plataforma: str) -> str:
-    """Normaliza y traduce el indicador de sitio cuando es genérico."""
-    if not plataforma or plataforma in ("Otro sitio", "Other site", "Generic"):
+def traducir_plataforma(plataforma: str, url: str = "") -> str:
+    """Normaliza y traduce el indicador de sitio usando la lógica centralizada de plataformas."""
+    resuelta = resolver_plataforma(url=url, plataforma_actual=plataforma)
+    if resuelta == PLATAFORMA_GENERICA:
         return t("other_site")
-    return plataforma
+    return resuelta
 
 
 def estimar_plataforma_url(url: str) -> str:
-    """Identifica de forma orientativa la plataforma según el nombre de host."""
-    url_limpia = url.strip().lower()
-    if not url_limpia or not (
-        url_limpia.startswith("http://") or url_limpia.startswith("https://")
-    ):
+    """Identifica de forma inmediata y centralizada la plataforma según el dominio/subdominio de la URL."""
+    host = extraer_host_normalizado(url)
+    if not host:
         return t("waiting_url")
 
-    try:
-        host = urlparse(url_limpia).netloc.lower()
-    except Exception:
-        return t("other_site")
-
-    if any(k in host for k in ("youtube.com", "youtu.be")):
-        return "YouTube"
-    if "vimeo.com" in host:
-        return "Vimeo"
-    if "soundcloud.com" in host:
-        return "SoundCloud"
-    if "tiktok.com" in host:
-        return "TikTok"
-    if any(k in host for k in ("twitter.com", "x.com")):
-        return "X / Twitter"
-    if "instagram.com" in host:
-        return "Instagram"
-    if "reddit.com" in host:
-        return "Reddit"
-    if "twitch.tv" in host:
-        return "Twitch"
+    plataforma = detectar_plataforma_por_url(url)
+    if plataforma:
+        return plataforma
 
     return t("other_site")
 
@@ -215,9 +202,11 @@ class FormularioDescarga(QFrame):
 
         layout.addStretch(1)
 
-        # Fila 6: Botón principal Añadir a la cola
+        # Fila 6: Botón principal Descargar / Download
         self.btn_anadir = QPushButton(t("btn_add_to_queue"))
         self.btn_anadir.setObjectName("btnPrimario")
+        self.btn_anadir.setToolTip(t("tooltip_download_btn"))
+        self.btn_anadir.setAccessibleName(t("btn_add_to_queue"))
         self.btn_anadir.setCursor(Qt.PointingHandCursor)
         self.btn_anadir.clicked.connect(self._al_pulsar_anadir)
         layout.addWidget(self.btn_anadir)
@@ -344,7 +333,7 @@ class FormularioDescarga(QFrame):
         tipo = TipoMedio(self.cmb_tipo.currentData())
         formato = self.cmb_formato.currentData()
         calidad = self.cmb_calidad.currentData()
-        plataforma = estimar_plataforma_url(url)
+        plataforma = resolver_plataforma(url=url)
 
         opciones = OpcionesDescarga(
             url=url,
@@ -376,6 +365,8 @@ class FormularioDescarga(QFrame):
         self.btn_examinar.setText(t("btn_browse"))
         self.btn_abrir_carpeta.setText(t("btn_open_folder"))
         self.btn_anadir.setText(t("btn_add_to_queue"))
+        self.btn_anadir.setToolTip(t("tooltip_download_btn"))
+        self.btn_anadir.setAccessibleName(t("btn_add_to_queue"))
 
         if not self.lbl_error_url.isHidden():
             self.lbl_error_url.setText(t("url_error_invalid"))

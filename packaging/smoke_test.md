@@ -55,7 +55,7 @@ Esta guía detalla los pasos para verificar que la distribución portable de **M
 2. Observa cómo la etiqueta superior detecta orientativamente el origen.
 3. Deja el selector en **Vídeo**, formato **MP4** y calidad **Mejor calidad disponible**.
 4. En nombre personalizado escribe opcionalmente: `Prueba Video BBB`.
-5. Haz clic en **Añadir a la cola**.
+5. Haz clic en **Descargar**.
 6. Observa la tarjeta en la columna derecha:
    - Estado inicial: "En espera" / "Preparando".
    - Progreso visual de porcentaje y métricas (velocidad, bytes descargados).
@@ -75,7 +75,7 @@ Esta guía detalla los pasos para verificar que la distribución portable de **M
    ```
 2. Cambia el selector a **Audio**.
 3. Selecciona formato **MP3** y calidad **320 kbps**.
-4. Haz clic en **Añadir a la cola**.
+4. Haz clic en **Descargar**.
 5. Observa el flujo de descarga, extracción con FFmpeg y verificación.
 6. Comprueba que el archivo `.mp3` generado se reproduce con sonido claro en el reproductor predeterminado del sistema.
 

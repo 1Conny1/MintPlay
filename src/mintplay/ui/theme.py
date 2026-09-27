@@ -551,6 +551,42 @@ def generar_hoja_estilos(tema: str = "dark") -> str:
         border: none;
     }}
 
+    /* Selector segmentado accesible para Ajustes (Idioma y Tema) */
+    QFrame#selectorSegmentado {{
+        background-color: {p["superficie"]};
+        border: 1px solid {p["borde"]};
+        border-radius: 8px;
+        padding: 2px;
+    }}
+
+    QPushButton#btnSegmento {{
+        background-color: transparent;
+        border: 1px solid transparent;
+        border-radius: 6px;
+        padding: 6px 16px;
+        min-width: 96px;
+        min-height: 24px;
+        font-size: 13px;
+        font-weight: 500;
+        color: {p["texto_secundario"]};
+    }}
+
+    QPushButton#btnSegmento:hover {{
+        color: {p["texto"]};
+        background-color: {p["superficie_hover"]};
+    }}
+
+    QPushButton#btnSegmento:checked {{
+        background-color: {p["acento_menta"]};
+        color: {p["texto_boton_acento"]};
+        border: 1px solid {p["acento_menta"]};
+        font-weight: 600;
+    }}
+
+    QPushButton#btnSegmento:focus {{
+        border: 1.5px solid {p["borde_foco"]};
+    }}
+
     /* Grupos en diálogo de ajustes */
     QGroupBox {{
         font-weight: 600;

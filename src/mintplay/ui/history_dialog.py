@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
 from ..domain.models import OpcionesDescarga, RegistroHistorial
 from ..services.history_manager import GestorHistorial
 from .download_form import traducir_etiqueta_calidad, traducir_plataforma
-from .i18n_manager import obtener_traductor, t
+from .i18n_manager import confirmar_accion_si_no, obtener_traductor, t
 from .job_card import formatear_tamano
 from .theme import generar_hoja_estilos, obtener_paleta, renderizar_svg_pixmap
 
@@ -245,7 +245,7 @@ class TarjetaHistorial(QFrame):
             self.lbl_estado_archivo.setToolTip(t("history_tooltip_missing_file"))
 
         # Plataforma traducida
-        self.lbl_plataforma.setText(traducir_plataforma(reg.platform_hint))
+        self.lbl_plataforma.setText(traducir_plataforma(reg.platform_hint, reg.url))
 
         # Resumen técnico: Vídeo/Audio · Formato · Calidad (y calidad efectiva si difiere)
         tipo_texto = (
@@ -650,19 +650,17 @@ class DialogoHistorial(QDialog):
         self.redescarga_solicitada.emit(opciones, registro.platform_hint)
 
     def vaciar_historial_confirmado(self, confirmar: bool = True) -> bool:
-        """Pide confirmación explícita y vacía únicamente los registros del historial."""
+        """Pide confirmación explícita con botones Sí/No (o Yes/No) y vacía únicamente los registros."""
         if self.gestor_historial.total_registros == 0:
             return False
 
         if confirmar:
-            respuesta = QMessageBox.question(
+            confirmado = confirmar_accion_si_no(
                 self,
                 t("confirm_clear_history_title"),
                 t("confirm_clear_history_message"),
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
             )
-            if respuesta != QMessageBox.Yes:
+            if not confirmado:
                 return False
 
         self.gestor_historial.vaciar_historial()

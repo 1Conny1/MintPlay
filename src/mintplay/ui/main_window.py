@@ -27,7 +27,7 @@ from ..services.queue_manager import GestorCola
 from ..services.runtime_paths import obtener_ruta_icono
 from .download_form import FormularioDescarga
 from .history_dialog import DialogoHistorial
-from .i18n_manager import GestorTraduccion, obtener_traductor, t
+from .i18n_manager import GestorTraduccion, confirmar_accion_si_no, obtener_traductor, t
 from .queue_panel import PanelCola
 from .settings_dialog import DialogoAjustes
 from .theme import cargar_icono_svg, generar_hoja_estilos
@@ -48,6 +48,7 @@ class VentanaPrincipal(QMainWindow):
         self.gestor = gestor_cola
         self.config = configuracion
         self._dialogo_historial: Optional[DialogoHistorial] = None
+        self._dialogo_ajustes: Optional[DialogoAjustes] = None
         self.traductor: GestorTraduccion = obtener_traductor(self.config.get("idioma", "es"))
         self.traductor.cambiar_idioma(self.config.get("idioma", "es"))
 
@@ -134,12 +135,16 @@ class VentanaPrincipal(QMainWindow):
         self.btn_historial.clicked.connect(self._abrir_historial)
         fila_encabezado.addWidget(self.btn_historial)
 
-        # Selector de idioma rápido [ES / EN]
-        self.btn_idioma = QPushButton("EN" if self.traductor.idioma == "es" else "ES")
+        # Selector de idioma rápido sincronizado con Ajustes (muestra el idioma activo: Español / English)
+        etiqueta_idioma = (
+            t("settings_lang_es") if self.traductor.idioma == "es" else t("settings_lang_en")
+        )
+        self.btn_idioma = QPushButton(etiqueta_idioma)
         self.btn_idioma.setObjectName("btnBarraSuperior")
         self.btn_idioma.setToolTip(t("tooltip_switch_lang"))
         self.btn_idioma.setAccessibleName(t("tooltip_switch_lang"))
-        self.btn_idioma.setFixedSize(48, 36)
+        self.btn_idioma.setFixedHeight(36)
+        self.btn_idioma.setMinimumWidth(78)
         self.btn_idioma.setCursor(Qt.PointingHandCursor)
         self.btn_idioma.clicked.connect(self._alternar_idioma)
         fila_encabezado.addWidget(self.btn_idioma)
@@ -250,10 +255,13 @@ class VentanaPrincipal(QMainWindow):
         guardar_configuracion(self.config)
 
     def _al_cambiar_idioma(self, nuevo_idioma: str) -> None:
+        self.config["idioma"] = nuevo_idioma
         self.setWindowTitle(t("app_name"))
         self.lbl_marca.setText(t("app_name"))
         self.lbl_subtitulo.setText(t("app_subtitle"))
-        self.btn_idioma.setText("EN" if nuevo_idioma == "es" else "ES")
+        self.btn_idioma.setText(
+            t("settings_lang_es") if nuevo_idioma == "es" else t("settings_lang_en")
+        )
         self.btn_idioma.setToolTip(t("tooltip_switch_lang"))
         self.btn_idioma.setAccessibleName(t("tooltip_switch_lang"))
         self._actualizar_iconos_barra_superior(self.config.get("tema", "dark"))
@@ -275,6 +283,8 @@ class VentanaPrincipal(QMainWindow):
         self.panel_cola.actualizar_tema(tema)
         if self._dialogo_historial is not None:
             self._dialogo_historial.actualizar_tema(tema)
+        if self._dialogo_ajustes is not None:
+            self._dialogo_ajustes.actualizar_tema(tema)
 
     def _abrir_historial(self) -> DialogoHistorial:
         """Abre o enfoca la ventana secundaria del historial local de descargas."""
@@ -299,8 +309,12 @@ class VentanaPrincipal(QMainWindow):
 
     def _abrir_ajustes(self) -> None:
         dlg = DialogoAjustes(self.config, self)
+        self._dialogo_ajustes = dlg
         dlg.configuracion_guardada.connect(self._al_actualizar_ajustes)
-        dlg.exec()
+        try:
+            dlg.exec()
+        finally:
+            self._dialogo_ajustes = None
 
     def _al_actualizar_ajustes(self, nuevos_ajustes: Dict[str, Any]) -> None:
         idioma_anterior = self.config.get("idioma")
@@ -308,27 +322,29 @@ class VentanaPrincipal(QMainWindow):
         self.config = dict(nuevos_ajustes)
         guardar_configuracion(self.config)
 
-        if self.config.get("idioma") != idioma_anterior:
-            self.traductor.cambiar_idioma(self.config["idioma"])
+        nuevo_idioma = self.config.get("idioma", "es")
+        if nuevo_idioma != idioma_anterior or self.traductor.idioma != nuevo_idioma:
+            self.traductor.cambiar_idioma(nuevo_idioma)
+        else:
+            self._al_cambiar_idioma(nuevo_idioma)
 
-        if self.config.get("tema") != tema_anterior:
-            self._aplicar_tema(self.config["tema"])
+        nuevo_tema = self.config.get("tema", "dark")
+        if nuevo_tema != tema_anterior:
+            self._aplicar_tema(nuevo_tema)
 
         if "directorio_descargas" in self.config:
             self.formulario.establecer_directorio_destino(self.config["directorio_descargas"])
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        """Controla el cierre de la ventana protegiendo descargas en curso."""
+        """Controla el cierre de la ventana protegiendo descargas en curso con confirmación traducida."""
         trabajos_activos = [t for t in self.gestor.trabajos if t.status == EstadoTrabajo.ACTIVO]
         if trabajos_activos:
-            respuesta = QMessageBox.question(
+            confirmado = confirmar_accion_si_no(
                 self,
                 t("confirm_exit_title"),
                 t("confirm_exit_message"),
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
             )
-            if respuesta != QMessageBox.Yes:
+            if not confirmado:
                 event.ignore()
                 return
 

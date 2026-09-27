@@ -11,6 +11,7 @@ from typing import Any, Callable, Dict, Optional
 import yt_dlp
 from ..domain.format_policy import construir_config_ytdlp
 from ..domain.models import FaseTrabajo, TipoMedio, TrabajoDescarga
+from ..domain.platforms import resolver_plataforma
 from .media_probe import verificar_archivo_multimedia
 from .output_paths import (
     crear_directorio_staging,
@@ -120,9 +121,12 @@ class ServicioDescargaYtDlp:
                         trabajo.display_title == trabajo.url and not trabajo.custom_name
                     ):
                         trabajo.display_title = str(titulo)
-                extractor = info_dict.get("extractor_key")
-                if extractor and trabajo.platform_hint in ("", "Otro sitio", "Other site"):
-                    trabajo.platform_hint = str(extractor)
+                extractor = info_dict.get("extractor_key") or info_dict.get("extractor")
+                trabajo.platform_hint = resolver_plataforma(
+                    url=trabajo.url,
+                    extractor_key=str(extractor) if extractor else None,
+                    plataforma_actual=trabajo.platform_hint,
+                )
 
             # 2. Hook de progreso con limitador de frecuencia (throttling ~8 Hz)
             def hook_progreso(d: Dict[str, Any]) -> None:

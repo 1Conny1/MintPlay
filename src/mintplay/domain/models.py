@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Optional
 
+from .platforms import resolver_plataforma
+
 
 class EstadoTrabajo(str, Enum):
     """Estados del ciclo de vida de un trabajo en la cola."""
@@ -207,13 +209,18 @@ class TrabajoDescarga:
     @classmethod
     def desde_dict(cls, data: dict[str, Any]) -> TrabajoDescarga:
         """Crea una instancia restaurada desde un diccionario."""
+        url_val = data.get("url", "")
+        plat_val = resolver_plataforma(
+            url=url_val,
+            plataforma_actual=data.get("platform_hint", "Otro sitio"),
+        )
         return cls(
             id=data["id"],
             created_at=data.get("created_at", time.time()),
-            url=data.get("url", ""),
+            url=url_val,
             display_title=data.get("display_title", ""),
             custom_name=data.get("custom_name", ""),
-            platform_hint=data.get("platform_hint", "Otro sitio"),
+            platform_hint=plat_val,
             media_type=TipoMedio(data.get("media_type", "video")),
             target_extension=data.get("target_extension", "mp4"),
             quality_choice=data.get("quality_choice", "best"),
@@ -237,11 +244,12 @@ class TrabajoDescarga:
     def desde_opciones(cls, opciones: OpcionesDescarga, plataforma: str = "Otro sitio") -> TrabajoDescarga:
         """Crea un nuevo trabajo en espera a partir de opciones inmutables."""
         nombre_mostrado = opciones.custom_name.strip() if opciones.custom_name.strip() else opciones.url
+        plat_resuelta = resolver_plataforma(url=opciones.url, plataforma_actual=plataforma)
         return cls(
             url=opciones.url,
             display_title=nombre_mostrado,
             custom_name=opciones.custom_name.strip(),
-            platform_hint=plataforma,
+            platform_hint=plat_resuelta,
             media_type=opciones.media_type,
             target_extension=opciones.target_extension,
             quality_choice=opciones.quality_choice,
@@ -332,6 +340,10 @@ class RegistroHistorial:
 
         file_size_raw = data.get("file_size")
         file_size = int(file_size_raw) if file_size_raw is not None else None
+        plat_resuelta = resolver_plataforma(
+            url=url,
+            plataforma_actual=str(data.get("platform_hint") or "Otro sitio"),
+        )
 
         return cls(
             id=rec_id,
@@ -343,7 +355,7 @@ class RegistroHistorial:
             final_filename=final_filename,
             output_path=output_path,
             destination_dir=destination_dir,
-            platform_hint=str(data.get("platform_hint") or "Otro sitio"),
+            platform_hint=plat_resuelta,
             media_type=TipoMedio(data.get("media_type", "video")),
             target_extension=str(data.get("target_extension") or "mp4"),
             quality_choice=str(data.get("quality_choice") or "best"),
@@ -379,6 +391,10 @@ class RegistroHistorial:
 
         titulo = trabajo.display_title or trabajo.custom_name or nombre_final or trabajo.url
         instante = completed_at if completed_at is not None else time.time()
+        plat_resuelta = resolver_plataforma(
+            url=trabajo.url,
+            plataforma_actual=trabajo.platform_hint,
+        )
 
         return cls(
             id=f"{trabajo.id}:{trabajo.attempt}",
@@ -390,7 +406,7 @@ class RegistroHistorial:
             final_filename=nombre_final,
             output_path=ruta_salida,
             destination_dir=dir_destino,
-            platform_hint=trabajo.platform_hint or "Otro sitio",
+            platform_hint=plat_resuelta,
             media_type=trabajo.media_type,
             target_extension=trabajo.target_extension,
             quality_choice=trabajo.quality_choice,

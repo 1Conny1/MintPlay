@@ -8,6 +8,7 @@ from typing import List, Optional
 from PySide6.QtCore import QObject, Signal
 
 from ..domain.models import EstadoTrabajo, RegistroHistorial, TipoMedio, TrabajoDescarga
+from ..domain.platforms import PLATAFORMA_GENERICA, resolver_plataforma
 from .persistence import (
     MAX_REGISTROS_HISTORIAL,
     cargar_historial,
@@ -17,20 +18,15 @@ from .persistence import (
 logger = logging.getLogger(__name__)
 
 
-def _normalizar_plataforma_busqueda(platform_hint: str) -> str:
+def _normalizar_plataforma_busqueda(platform_hint: str, url: str = "") -> str:
     """Devuelve variantes buscables del nombre de plataforma en español e inglés."""
-    p = (platform_hint or "").strip().lower()
-    if p in ("otro sitio", "other site", "generic", ""):
+    resuelta = resolver_plataforma(url=url, plataforma_actual=platform_hint)
+    p = resuelta.strip().lower()
+    if resuelta == PLATAFORMA_GENERICA or p in ("otro sitio", "other site", "generic", ""):
         return "otro sitio other site"
-    if "youtube" in p or p == "yt":
-        return f"{p} youtube"
-    if "twitter" in p or p == "x" or "x / twitter" in p:
-        return f"{p} x / twitter"
-    if "tiktok" in p:
-        return f"{p} tiktok"
-    if "instagram" in p:
-        return f"{p} instagram"
-    return p
+    if p == "x / twitter":
+        return "x / twitter x twitter"
+    return f"{p} {(platform_hint or '').strip().lower()}".strip()
 
 
 class GestorHistorial(QObject):
@@ -158,7 +154,7 @@ class GestorHistorial(QObject):
                 continue
 
             if consulta:
-                plat_buscable = _normalizar_plataforma_busqueda(r.platform_hint)
+                plat_buscable = _normalizar_plataforma_busqueda(r.platform_hint, r.url)
                 campos = (
                     (r.title or "").lower(),
                     (r.final_filename or "").lower(),

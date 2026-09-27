@@ -68,3 +68,45 @@ def obtener_traductor(idioma_inicial: str = "es") -> GestorTraduccion:
 def t(clave: str, defecto: Optional[str] = None) -> str:
     """Función rápida para traducir una clave."""
     return obtener_traductor().texto(clave, defecto)
+
+
+def crear_cuadro_confirmacion_si_no(
+    parent: Optional[object],
+    titulo: str,
+    mensaje: str,
+) -> tuple[object, object, object]:
+    """Construye un QMessageBox con botones explícitos 'Sí'/'No' o 'Yes'/'No' según el idioma activo.
+
+    El botón predeterminado y de escape es siempre 'No' para evitar acciones destructivas accidentales.
+    Devuelve (cuadro, btn_si, btn_no).
+    """
+    from PySide6.QtWidgets import QMessageBox, QWidget
+
+    widget_padre = parent if isinstance(parent, QWidget) else None
+    cuadro = QMessageBox(widget_padre)
+    if widget_padre is not None and widget_padre.styleSheet():
+        cuadro.setStyleSheet(widget_padre.styleSheet())
+    cuadro.setIcon(QMessageBox.Question)
+    cuadro.setWindowTitle(titulo)
+    cuadro.setText(mensaje)
+
+    btn_si = cuadro.addButton(t("btn_yes"), QMessageBox.YesRole)
+    btn_no = cuadro.addButton(t("btn_no"), QMessageBox.NoRole)
+    btn_si.setObjectName("btnConfirmarSi")
+    btn_no.setObjectName("btnConfirmarNo")
+
+    cuadro.setDefaultButton(btn_no)
+    cuadro.setEscapeButton(btn_no)
+    return cuadro, btn_si, btn_no
+
+
+def confirmar_accion_si_no(
+    parent: Optional[object],
+    titulo: str,
+    mensaje: str,
+) -> bool:
+    """Muestra un diálogo modal de confirmación traducido y devuelve True solo si se pulsa Sí/Yes."""
+    cuadro, btn_si, _btn_no = crear_cuadro_confirmacion_si_no(parent, titulo, mensaje)
+    cuadro.exec()
+    return cuadro.clickedButton() == btn_si
+
