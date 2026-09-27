@@ -1,0 +1,31 @@
+# Entornos virtuales
+venv/
+.venv/
+env/
+
+# Python cache y bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Pruebas y cobertura
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Compilación, binarios pesados y empaquetado
+build/
+dist/
+bin/*.exe
+!bin/.gitkeep
+*.spec.bak
+
+# Archivos del sistema
+Thumbs.db
+.DS_Store
+*.tmp
+*.tmp.*
+
+# Documentación del proyecto
+proyecto/

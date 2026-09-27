@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mintplay"
+version = "1.0.0"
+description = "Aplicación de escritorio en Python para descargar vídeo y audio de uso personal"
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [
+    { name = "MintPlay Contributors" }
+]
+license = { text = "MIT" }
+dependencies = [
+    "PySide6>=6.11.0",
+    "yt-dlp>=2026.8.0",
+    "yt-dlp-ejs>=0.8.0",
+    "mutagen>=1.48.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pyinstaller>=6.22.0",
+    "pytest>=9.0.0",
+]
+
+[project.scripts]
+mintplay = "mintplay.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
