@@ -29,7 +29,14 @@ from mintplay.ui.i18n_manager import (
 from mintplay.ui.job_card import TarjetaTrabajo
 from mintplay.ui.main_window import VentanaPrincipal
 from mintplay.ui.settings_dialog import DialogoAjustes
-from mintplay.ui.theme import cargar_icono_svg, generar_hoja_estilos
+from mintplay.ui.theme import (
+    MODOS_TEMA,
+    PALETAS_IDS,
+    calcular_contraste_wcag,
+    cargar_icono_svg,
+    generar_hoja_estilos,
+    obtener_paleta,
+)
 
 
 class ServicioInerte:
@@ -462,4 +469,188 @@ def test_selector_idioma_ajustes_segmentado_y_sincronizado(qapp, tmp_path: Path)
         dlg_ajustes.close()
         dlg_hist.close()
         gestor.cerrar()
+
+
+def test_diez_combinaciones_paletas_y_contraste_wcag_aa():
+    """Verifica las 10 combinaciones (5 paletas x 2 modos), tokens semánticos y contraste WCAG AA >= 4.5:1."""
+    assert PALETAS_IDS == ("mint", "sakura", "indigo", "amber", "ocean")
+    assert MODOS_TEMA == ("light", "dark")
+
+    acentos_esperados = {
+        ("mint", "light"): "#168569",
+        ("mint", "dark"): "#79D6B4",
+        ("sakura", "light"): "#A83B64",
+        ("sakura", "dark"): "#E88CAA",
+        ("indigo", "light"): "#465CC5",
+        ("indigo", "dark"): "#A7B4FF",
+        ("amber", "light"): "#946018",
+        ("amber", "dark"): "#EFC079",
+        ("ocean", "light"): "#167C9B",
+        ("ocean", "dark"): "#75C7DF",
+    }
+
+    for paleta_id in PALETAS_IDS:
+        for modo in MODOS_TEMA:
+            p = obtener_paleta(modo, paleta_id)
+            assert p["acento"] == acentos_esperados[(paleta_id, modo)]
+
+            qss = generar_hoja_estilos(modo, paleta_id)
+            assert p["fondo"] in qss
+            assert p["superficie_panel"] in qss
+            assert p["acento"] in qss
+            assert p["texto_acento"] in qss
+
+            # Los estados semánticos conservan su significado y no son reemplazados por el acento
+            assert p["error"] != p["acento"]
+            assert p["exito"] != p["error"]
+
+            pares_texto = {
+                "texto/fondo": (p["texto"], p["fondo"]),
+                "texto/superficie": (p["texto"], p["superficie"]),
+                "texto/elevada": (p["texto"], p["elevada"]),
+                "texto/tarjeta": (p["texto"], p["superficie_tarjeta"]),
+                "texto/tarjeta_activa": (p["texto"], p["superficie_tarjeta_activa"]),
+                "secundario/superficie": (p["texto_secundario"], p["superficie"]),
+                "secundario/elevada": (p["texto_secundario"], p["elevada"]),
+                "secundario/tarjeta": (p["texto_secundario"], p["superficie_tarjeta"]),
+                "tenue/superficie": (p["texto_tenue"], p["superficie"]),
+                "acento/texto_acento": (p["acento"], p["texto_acento"]),
+                "acento_hover/texto_acento": (p["acento_hover"], p["texto_acento"]),
+                "chip/chip_fondo": (p["acento_texto_chip"], p["acento_fondo"]),
+                "exito_texto/exito_fondo": (p["exito_texto"], p["exito_fondo"]),
+                "error_texto/error_fondo": (p["error_texto"], p["error_fondo"]),
+                "espera_texto/espera_fondo": (p["espera_texto"], p["espera_fondo"]),
+                "advertencia_texto/advertencia_fondo": (
+                    p["advertencia_texto"],
+                    p["advertencia_fondo"],
+                ),
+                "error/superficie": (p["error"], p["superficie"]),
+            }
+            for nombre_par, (c1, c2) in pares_texto.items():
+                ratio = calcular_contraste_wcag(c1, c2)
+                assert ratio >= 4.5, (
+                    f"Contraste insuficiente en ({paleta_id}, {modo}) [{nombre_par}]: {ratio:.2f}:1"
+                )
+
+
+def test_recorrido_cinco_paletas_claro_oscuro_en_vivo_y_sincronizacion(
+    qapp, tmp_path: Path
+):
+    """Recorre las 5 paletas en claro y oscuro con descarga en curso, historial y ajustes abiertos."""
+    with patch(
+        "mintplay.services.persistence.obtener_directorio_datos_usuario",
+        return_value=tmp_path,
+    ):
+        traductor = obtener_traductor("es")
+        traductor.cambiar_idioma("es")
+        gestor = GestorCola(ServicioInerte())
+
+        t_activo = TrabajoDescarga(
+            url="https://www.youtube.com/watch?v=live1",
+            display_title="Transmisión Activa",
+            platform_hint="YouTube",
+            media_type=TipoMedio.VIDEO,
+            target_extension="mp4",
+            quality_choice="1080p",
+            destination_dir=str(tmp_path),
+            status=EstadoTrabajo.ACTIVO,
+            phase=FaseTrabajo.DESCARGANDO,
+            progress=64.0,
+        )
+        t_fallido = TrabajoDescarga(
+            url="https://www.facebook.com/reel/1386830136202564",
+            display_title="Reel con Error",
+            platform_hint="Facebook",
+            media_type=TipoMedio.VIDEO,
+            target_extension="mp4",
+            quality_choice="best",
+            destination_dir=str(tmp_path),
+            status=EstadoTrabajo.ERROR,
+            phase=FaseTrabajo.ERROR,
+            error_code="NETWORK_ERROR",
+            error_detail="Timeout connecting to server",
+        )
+        gestor.inicializar_con_trabajos([t_activo, t_fallido])
+
+        ventana = VentanaPrincipal(
+            gestor,
+            {"idioma": "es", "tema": "dark", "directorio_descargas": str(tmp_path)},
+        )
+        assert ventana.config["paleta"] == "mint"
+        assert ventana.config["tema"] == "dark"
+
+        dlg_hist = ventana._abrir_historial()
+        dlg_ajustes = DialogoAjustes(ventana.config, ventana)
+        dlg_ajustes.configuracion_guardada.connect(ventana._al_actualizar_ajustes)
+
+        card_activa_ref = ventana.panel_cola._tarjetas[t_activo.id]
+        card_fallida_ref = ventana.panel_cola._tarjetas[t_fallido.id]
+        ventana.formulario.txt_url.setText("https://www.facebook.com/reel/1386830136202564")
+
+        # Recorrer las 5 paletas en modo claro y oscuro desde Ajustes
+        for paleta_id in PALETAS_IDS:
+            for modo in MODOS_TEMA:
+                dlg_ajustes.seleccionar_paleta(paleta_id)
+                dlg_ajustes.seleccionar_tema(modo)
+
+                tokens = obtener_paleta(modo, paleta_id)
+                assert ventana.config["paleta"] == paleta_id
+                assert ventana.config["tema"] == modo
+                assert tokens["acento"] in ventana.styleSheet()
+                assert tokens["acento"] in dlg_hist.styleSheet()
+                assert tokens["acento"] in dlg_ajustes.styleSheet()
+
+                # Las tarjetas y su progreso no se recrean ni se reinician
+                assert ventana.panel_cola._tarjetas[t_activo.id] is card_activa_ref
+                assert ventana.panel_cola._tarjetas[t_fallido.id] is card_fallida_ref
+                assert card_activa_ref.barra_progreso.value() == 64
+                assert ventana.formulario.lbl_chip.text() == "Facebook"
+
+        # Verificar que el botón sol/luna del encabezado cambia SOLO el modo conservando la paleta
+        dlg_ajustes.seleccionar_paleta("sakura")
+        dlg_ajustes.seleccionar_tema("light")
+        assert ventana.config["paleta"] == "sakura"
+        assert ventana.config["tema"] == "light"
+        assert dlg_ajustes.botones_paleta["sakura"].isChecked() is True
+        assert dlg_ajustes.btn_tema_claro.isChecked() is True
+
+        # Pulsar sol/luna en el encabezado -> cambia a oscuro pero conserva Sakura
+        ventana._alternar_tema()
+        assert ventana.config["paleta"] == "sakura"
+        assert ventana.config["tema"] == "dark"
+        assert dlg_ajustes.botones_paleta["sakura"].isChecked() is True
+        assert dlg_ajustes.btn_tema_oscuro.isChecked() is True
+        assert dlg_ajustes.btn_tema_claro.isChecked() is False
+
+        # Cambiar idioma ES -> EN no altera la paleta seleccionada ("sakura") ni el modo ("dark")
+        ventana._alternar_idioma()
+        assert ventana.traductor.idioma == "en"
+        assert ventana.config["paleta"] == "sakura"
+        assert ventana.config["tema"] == "dark"
+        assert dlg_ajustes.lbl_paleta.text() == "Color Palette"
+        assert dlg_ajustes.botones_paleta["mint"].text() == "Mint"
+        assert dlg_ajustes.botones_paleta["ocean"].text() == "Ocean"
+        assert dlg_ajustes.lbl_tema.text() == "Appearance"
+        assert dlg_ajustes.btn_tema_claro.text() == "Light"
+        assert dlg_ajustes.btn_tema_oscuro.text() == "Dark"
+
+        # Persistencia tras reinicio: simular cierre y nueva instancia con cargar_configuracion()
+        cfg_guardada = cargar_configuracion()
+        assert cfg_guardada["paleta"] == "sakura"
+        assert cfg_guardada["tema"] == "dark"
+
+        ventana_reiniciada = VentanaPrincipal(gestor, cfg_guardada)
+        assert ventana_reiniciada.config["paleta"] == "sakura"
+        assert ventana_reiniciada.config["tema"] == "dark"
+        assert obtener_paleta("dark", "sakura")["acento"] in ventana_reiniciada.styleSheet()
+
+        traductor.cambiar_idioma("es")
+        # Finalizar estado activo antes de cerrar ventanas en teardown para no disparar el modal de salida
+        t_activo.status = EstadoTrabajo.COMPLETADO
+        dlg_ajustes.close()
+        dlg_hist.close()
+        ventana_reiniciada.close()
+        ventana.close()
+        gestor.cerrar()
+
 

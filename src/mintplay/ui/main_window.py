@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from PySide6.QtCore import QRect, QSize, Qt
+from PySide6.QtCore import QRect, QSize, Qt, Signal
 from PySide6.QtGui import QCloseEvent, QGuiApplication, QIcon
 from PySide6.QtWidgets import (
     QFrame,
@@ -22,7 +22,10 @@ from PySide6.QtWidgets import (
 )
 
 from ..domain.models import EstadoTrabajo, OpcionesDescarga, TrabajoDescarga
-from ..services.persistence import guardar_configuracion
+from ..services.persistence import (
+    guardar_configuracion,
+    normalizar_configuracion_usuario,
+)
 from ..services.queue_manager import GestorCola
 from ..services.runtime_paths import obtener_ruta_icono
 from .download_form import FormularioDescarga
@@ -30,13 +33,19 @@ from .history_dialog import DialogoHistorial
 from .i18n_manager import GestorTraduccion, confirmar_accion_si_no, obtener_traductor, t
 from .queue_panel import PanelCola
 from .settings_dialog import DialogoAjustes
-from .theme import cargar_icono_svg, generar_hoja_estilos
+from .theme import (
+    cargar_icono_svg,
+    generar_hoja_estilos,
+    normalizar_preferencias_tema,
+)
 
 logger = logging.getLogger(__name__)
 
 
 class VentanaPrincipal(QMainWindow):
     """Ventana principal de escritorio para MintPlay."""
+
+    tema_cambiado = Signal(str, str)  # (modo, paleta)
 
     def __init__(
         self,
@@ -46,7 +55,7 @@ class VentanaPrincipal(QMainWindow):
     ):
         super().__init__(parent)
         self.gestor = gestor_cola
-        self.config = configuracion
+        self.config = normalizar_configuracion_usuario(configuracion)
         self._dialogo_historial: Optional[DialogoHistorial] = None
         self._dialogo_ajustes: Optional[DialogoAjustes] = None
         self.traductor: GestorTraduccion = obtener_traductor(self.config.get("idioma", "es"))
@@ -73,9 +82,15 @@ class VentanaPrincipal(QMainWindow):
 
         # Paneles principales
         tema_inicial = self.config.get("tema", "dark")
+        paleta_inicial = self.config.get("paleta", "mint")
         dir_descargas = self.config.get("directorio_descargas", str(Path.home() / "Downloads"))
         self.formulario = FormularioDescarga(dir_descargas, self)
-        self.panel_cola = PanelCola(self.gestor, self, tema_inicial=tema_inicial)
+        self.panel_cola = PanelCola(
+            self.gestor,
+            self,
+            tema_inicial=tema_inicial,
+            paleta_inicial=paleta_inicial,
+        )
 
         self.formulario.descarga_solicitada.connect(self._al_solicitar_descarga)
 
@@ -91,8 +106,8 @@ class VentanaPrincipal(QMainWindow):
 
         self.layout_raiz.addWidget(self.contenedor_contenido, 1)
 
-        # Aplicar estilo e iconos vectoriales iniciales
-        self._aplicar_tema(tema_inicial)
+        # Aplicar estilo e iconos vectoriales iniciales (paleta + modo)
+        self._aplicar_tema(tema_inicial, paleta_inicial)
 
         # Conectar cambio de idioma
         self.traductor.idioma_cambiado.connect(self._al_cambiar_idioma)
@@ -149,7 +164,7 @@ class VentanaPrincipal(QMainWindow):
         self.btn_idioma.clicked.connect(self._alternar_idioma)
         fila_encabezado.addWidget(self.btn_idioma)
 
-        # Conmutador de tema con iconos SVG propios (sun.svg / moon.svg)
+        # Conmutador de modo claro/oscuro con iconos SVG propios (sun.svg / moon.svg)
         self.btn_tema = QPushButton("")
         self.btn_tema.setObjectName("btnBarraSuperior")
         self.btn_tema.setFixedSize(40, 36)
@@ -171,24 +186,38 @@ class VentanaPrincipal(QMainWindow):
 
         self.layout_raiz.addLayout(fila_encabezado)
 
-    def _actualizar_iconos_barra_superior(self, tema: str) -> None:
-        """Asigna los iconos SVG vectoriales de historial, sol, luna y ajustes según el tema."""
-        es_oscuro = tema == "dark"
+    def _actualizar_iconos_barra_superior(
+        self,
+        tema: str,
+        paleta: Optional[str] = None,
+    ) -> None:
+        """Asigna los iconos SVG vectoriales de historial, sol, luna y ajustes según paleta y modo."""
+        paleta_norm, modo_norm = normalizar_preferencias_tema(
+            tema,
+            paleta or self.config.get("paleta", "mint"),
+        )
+        es_oscuro = modo_norm == "dark"
         svg_tema = "sun.svg" if es_oscuro else "moon.svg"
         tooltip_tema = t("tooltip_theme_to_light") if es_oscuro else t("tooltip_theme_to_dark")
 
         self.btn_historial.setText(f" {t('btn_history')}")
-        self.btn_historial.setIcon(cargar_icono_svg("history.svg", tema=tema, tamano=16))
+        self.btn_historial.setIcon(
+            cargar_icono_svg("history.svg", tema=modo_norm, tamano=16, paleta=paleta_norm)
+        )
         self.btn_historial.setToolTip(t("tooltip_history"))
         self.btn_historial.setAccessibleName(t("history_title"))
 
         self.btn_tema.setText("")
-        self.btn_tema.setIcon(cargar_icono_svg(svg_tema, tema=tema, tamano=18))
+        self.btn_tema.setIcon(
+            cargar_icono_svg(svg_tema, tema=modo_norm, tamano=18, paleta=paleta_norm)
+        )
         self.btn_tema.setToolTip(tooltip_tema)
         self.btn_tema.setAccessibleName(tooltip_tema)
 
         self.btn_ajustes.setText("")
-        self.btn_ajustes.setIcon(cargar_icono_svg("settings.svg", tema=tema, tamano=18))
+        self.btn_ajustes.setIcon(
+            cargar_icono_svg("settings.svg", tema=modo_norm, tamano=18, paleta=paleta_norm)
+        )
         self.btn_ajustes.setToolTip(t("tooltip_settings"))
         self.btn_ajustes.setAccessibleName(t("settings_title"))
 
@@ -264,42 +293,68 @@ class VentanaPrincipal(QMainWindow):
         )
         self.btn_idioma.setToolTip(t("tooltip_switch_lang"))
         self.btn_idioma.setAccessibleName(t("tooltip_switch_lang"))
-        self._actualizar_iconos_barra_superior(self.config.get("tema", "dark"))
+        self._actualizar_iconos_barra_superior(
+            self.config.get("tema", "dark"),
+            self.config.get("paleta", "mint"),
+        )
 
         if self._tabs_compactas:
             self._tabs_compactas.setTabText(0, t("tab_add"))
             self._tabs_compactas.setTabText(1, t("tab_queue"))
 
     def _alternar_tema(self) -> None:
+        """Alterna únicamente el modo (light/dark) conservando la paleta de color elegida."""
         tema_actual = self.config.get("tema", "dark")
+        paleta_actual = self.config.get("paleta", "mint")
         nuevo_tema = "light" if tema_actual == "dark" else "dark"
         self.config["tema"] = nuevo_tema
-        self._aplicar_tema(nuevo_tema)
+        self._aplicar_tema(nuevo_tema, paleta_actual)
         guardar_configuracion(self.config)
 
-    def _aplicar_tema(self, tema: str) -> None:
-        self.setStyleSheet(generar_hoja_estilos(tema))
-        self._actualizar_iconos_barra_superior(tema)
-        self.panel_cola.actualizar_tema(tema)
+    def cambiar_paleta(self, nueva_paleta: str) -> None:
+        """Cambia la paleta de color conservando el modo actual y persiste."""
+        modo_actual = self.config.get("tema", "dark")
+        self._aplicar_tema(modo_actual, nueva_paleta)
+        guardar_configuracion(self.config)
+
+    def cambiar_modo_tema(self, nuevo_modo: str) -> None:
+        """Cambia el modo claro/oscuro conservando la paleta actual y persiste."""
+        paleta_actual = self.config.get("paleta", "mint")
+        self._aplicar_tema(nuevo_modo, paleta_actual)
+        guardar_configuracion(self.config)
+
+    def _aplicar_tema(self, tema: str, paleta: Optional[str] = None) -> None:
+        paleta_norm, modo_norm = normalizar_preferencias_tema(
+            tema,
+            paleta if paleta is not None else self.config.get("paleta", "mint"),
+        )
+        self.config["paleta"] = paleta_norm
+        self.config["tema"] = modo_norm
+        self.setStyleSheet(generar_hoja_estilos(modo_norm, paleta_norm))
+        self._actualizar_iconos_barra_superior(modo_norm, paleta_norm)
+        self.panel_cola.actualizar_tema(modo_norm, paleta_norm)
         if self._dialogo_historial is not None:
-            self._dialogo_historial.actualizar_tema(tema)
+            self._dialogo_historial.actualizar_tema(modo_norm, paleta_norm)
         if self._dialogo_ajustes is not None:
-            self._dialogo_ajustes.actualizar_tema(tema)
+            self._dialogo_ajustes.actualizar_tema(modo_norm, paleta_norm)
+        self.tema_cambiado.emit(modo_norm, paleta_norm)
 
     def _abrir_historial(self) -> DialogoHistorial:
         """Abre o enfoca la ventana secundaria del historial local de descargas."""
         tema_actual = self.config.get("tema", "dark")
+        paleta_actual = self.config.get("paleta", "mint")
         if self._dialogo_historial is None:
             self._dialogo_historial = DialogoHistorial(
                 self.gestor.historial,
                 self,
                 tema_inicial=tema_actual,
+                paleta_inicial=paleta_actual,
             )
             self._dialogo_historial.redescarga_solicitada.connect(
                 self._al_solicitar_descarga
             )
         else:
-            self._dialogo_historial.actualizar_tema(tema_actual)
+            self._dialogo_historial.actualizar_tema(tema_actual, paleta_actual)
             self._dialogo_historial.revalidar_existencia_archivos()
 
         self._dialogo_historial.show()
@@ -319,7 +374,8 @@ class VentanaPrincipal(QMainWindow):
     def _al_actualizar_ajustes(self, nuevos_ajustes: Dict[str, Any]) -> None:
         idioma_anterior = self.config.get("idioma")
         tema_anterior = self.config.get("tema")
-        self.config = dict(nuevos_ajustes)
+        paleta_anterior = self.config.get("paleta")
+        self.config = normalizar_configuracion_usuario(dict(nuevos_ajustes))
         guardar_configuracion(self.config)
 
         nuevo_idioma = self.config.get("idioma", "es")
@@ -329,8 +385,9 @@ class VentanaPrincipal(QMainWindow):
             self._al_cambiar_idioma(nuevo_idioma)
 
         nuevo_tema = self.config.get("tema", "dark")
-        if nuevo_tema != tema_anterior:
-            self._aplicar_tema(nuevo_tema)
+        nueva_paleta = self.config.get("paleta", "mint")
+        if nuevo_tema != tema_anterior or nueva_paleta != paleta_anterior:
+            self._aplicar_tema(nuevo_tema, nueva_paleta)
 
         if "directorio_descargas" in self.config:
             self.formulario.establecer_directorio_destino(self.config["directorio_descargas"])

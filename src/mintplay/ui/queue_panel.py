@@ -31,11 +31,13 @@ class PanelCola(QFrame):
         gestor_cola: GestorCola,
         parent: Optional[QWidget] = None,
         tema_inicial: str = "dark",
+        paleta_inicial: str = "mint",
     ):
         super().__init__(parent)
         self.setObjectName("panelCola")
         self.gestor = gestor_cola
         self._tema_actual = tema_inicial
+        self._paleta_actual = paleta_inicial
         self._tarjetas: Dict[str, TarjetaTrabajo] = {}
 
         layout = QVBoxLayout(self)
@@ -107,7 +109,7 @@ class PanelCola(QFrame):
         layout.addWidget(self.stack_cola, 1)
 
         # Renderizar ilustración SVG inicial
-        self.actualizar_tema(self._tema_actual)
+        self.actualizar_tema(self._tema_actual, self._paleta_actual)
 
         # Conectar señales del gestor
         self.gestor.trabajo_anadido.connect(self._al_anadir_trabajo)
@@ -125,14 +127,16 @@ class PanelCola(QFrame):
         total, espera, completos, errores = self.gestor.obtener_conteo_actual()
         self._al_cambiar_conteo(total, espera, completos, errores)
 
-    def actualizar_tema(self, tema: str) -> None:
-        """Actualiza la ilustración SVG del estado vacío con la paleta del tema activo."""
+    def actualizar_tema(self, tema: str, paleta: Optional[str] = None) -> None:
+        """Actualiza la ilustración SVG del estado vacío con la paleta y modo activos."""
         self._tema_actual = tema
-        paleta = obtener_paleta(tema)
+        if paleta is not None:
+            self._paleta_actual = paleta
+        tokens = obtener_paleta(tema, self._paleta_actual)
         pixmap = renderizar_svg_pixmap(
             nombre_svg="empty-wind.svg",
-            color_trazo=paleta["texto_secundario"],
-            color_acento=paleta["acento_menta"],
+            color_trazo=tokens["texto_secundario"],
+            color_acento=tokens["acento"],
             ancho=124,
             alto=76,
         )

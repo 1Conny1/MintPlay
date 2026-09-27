@@ -80,12 +80,21 @@ def crear_cuadro_confirmacion_si_no(
     El botón predeterminado y de escape es siempre 'No' para evitar acciones destructivas accidentales.
     Devuelve (cuadro, btn_si, btn_no).
     """
-    from PySide6.QtWidgets import QMessageBox, QWidget
+    from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
 
     widget_padre = parent if isinstance(parent, QWidget) else None
     cuadro = QMessageBox(widget_padre)
-    if widget_padre is not None and widget_padre.styleSheet():
-        cuadro.setStyleSheet(widget_padre.styleSheet())
+    estilo = ""
+    if widget_padre is not None:
+        estilo = widget_padre.styleSheet()
+        if not estilo and widget_padre.window() is not None:
+            estilo = widget_padre.window().styleSheet()
+    if not estilo and QApplication.instance() is not None:
+        ventana_activa = QApplication.activeWindow()
+        if ventana_activa is not None:
+            estilo = ventana_activa.styleSheet()
+    if estilo:
+        cuadro.setStyleSheet(estilo)
     cuadro.setIcon(QMessageBox.Question)
     cuadro.setWindowTitle(titulo)
     cuadro.setText(mensaje)

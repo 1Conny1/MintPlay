@@ -352,10 +352,12 @@ class DialogoHistorial(QDialog):
         gestor_historial: GestorHistorial,
         parent: Optional[QWidget] = None,
         tema_inicial: str = "dark",
+        paleta_inicial: str = "mint",
     ):
         super().__init__(parent)
         self.gestor_historial = gestor_historial
         self._tema_actual = tema_inicial
+        self._paleta_actual = paleta_inicial
         self._traductor = obtener_traductor()
 
         self._tarjetas: Dict[str, TarjetaHistorial] = {}
@@ -480,7 +482,7 @@ class DialogoHistorial(QDialog):
         self.gestor_historial.historial_cambiado.connect(self.refrescar_vista)
         self._traductor.idioma_cambiado.connect(self.retraducir)
 
-        self.actualizar_tema(self._tema_actual)
+        self.actualizar_tema(self._tema_actual, self._paleta_actual)
         self.refrescar_vista()
 
     def showEvent(self, event: QShowEvent) -> None:
@@ -513,15 +515,17 @@ class DialogoHistorial(QDialog):
         """Devuelve el texto de búsqueda actual."""
         return self.txt_buscar.text()
 
-    def actualizar_tema(self, tema: str) -> None:
+    def actualizar_tema(self, tema: str, paleta: Optional[str] = None) -> None:
         """Aplica la paleta y hoja de estilos del tema actual sin perder el estado de la vista."""
         self._tema_actual = tema
-        self.setStyleSheet(generar_hoja_estilos(tema))
-        paleta = obtener_paleta(tema)
+        if paleta is not None:
+            self._paleta_actual = paleta
+        self.setStyleSheet(generar_hoja_estilos(self._tema_actual, self._paleta_actual))
+        tokens = obtener_paleta(self._tema_actual, self._paleta_actual)
         pixmap = renderizar_svg_pixmap(
             nombre_svg="history.svg",
-            color_trazo=paleta["texto_tenue"],
-            color_acento=paleta["acento_menta"],
+            color_trazo=tokens["texto_tenue"],
+            color_acento=tokens["acento"],
             ancho=72,
             alto=72,
         )

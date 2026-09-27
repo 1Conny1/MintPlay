@@ -67,37 +67,105 @@ def _leer_json_seguro(ruta: Path, defecto: Any) -> Any:
         return defecto
 
 
+PALETAS_VALIDAS = ("mint", "sakura", "indigo", "amber", "ocean")
+MODOS_TEMA_VALIDOS = ("light", "dark")
+IDIOMAS_VALIDOS = ("es", "en")
+
+
+def normalizar_configuracion_usuario(config: dict[str, Any]) -> dict[str, Any]:
+    """Normaliza y migra la configuración de idioma, paleta, modo de tema y carpeta.
+
+    - Si una configuración antigua solo tiene `tema` ('light'/'dark'), conserva ese modo
+      y asigna la paleta predeterminada ('mint').
+    - Si `paleta` o `tema` contienen valores desconocidos o corruptos, recupera a 'mint'
+      y/o al modo válido ('dark' por defecto) sin bloquear el arranque.
+    """
+    predeterminado = obtener_configuracion_predeterminada()
+    if not isinstance(config, dict):
+        return predeterminado
+
+    # 1. Idioma
+    idioma_raw = config.get("idioma")
+    idioma = (
+        idioma_raw.strip().lower()
+        if isinstance(idioma_raw, str) and idioma_raw.strip().lower() in IDIOMAS_VALIDOS
+        else predeterminado["idioma"]
+    )
+
+    # 2. Paleta y modo (con migración de configuraciones antiguas)
+    paleta_raw = config.get("paleta")
+    tema_raw = config.get("tema")
+    if tema_raw is None:
+        tema_raw = config.get("modo_tema", config.get("modo"))
+
+    cand_paleta = paleta_raw.strip().lower() if isinstance(paleta_raw, str) else ""
+    cand_modo = tema_raw.strip().lower() if isinstance(tema_raw, str) else ""
+
+    # Soportar valores combinados tipo "sakura:light" o "ocean_dark"
+    for sep in (":", "_", "-"):
+        if sep in cand_modo:
+            partes = [p.strip() for p in cand_modo.split(sep, 1)]
+            if len(partes) == 2:
+                if partes[0] in PALETAS_VALIDAS and partes[1] in MODOS_TEMA_VALIDOS:
+                    if not cand_paleta:
+                        cand_paleta = partes[0]
+                    cand_modo = partes[1]
+                    break
+                if partes[1] in PALETAS_VALIDAS and partes[0] in MODOS_TEMA_VALIDOS:
+                    if not cand_paleta:
+                        cand_paleta = partes[1]
+                    cand_modo = partes[0]
+                    break
+
+    if cand_modo in PALETAS_VALIDAS and not cand_paleta:
+        cand_paleta = cand_modo
+        cand_modo = predeterminado["tema"]
+
+    paleta = cand_paleta if cand_paleta in PALETAS_VALIDAS else predeterminado["paleta"]
+    modo = cand_modo if cand_modo in MODOS_TEMA_VALIDOS else predeterminado["tema"]
+
+    # 3. Directorio de descargas
+    dir_raw = config.get("directorio_descargas")
+    directorio = (
+        dir_raw.strip()
+        if isinstance(dir_raw, str) and dir_raw.strip()
+        else predeterminado["directorio_descargas"]
+    )
+
+    config["idioma"] = idioma
+    config["paleta"] = paleta
+    config["tema"] = modo
+    config["directorio_descargas"] = directorio
+    return config
+
+
 def obtener_configuracion_predeterminada() -> dict[str, Any]:
-    """Genera la configuración inicial recomendada."""
+    """Genera la configuración inicial recomendada (Menta oscuro en español)."""
     return {
         "idioma": "es",
+        "paleta": "mint",
         "tema": "dark",
         "directorio_descargas": str(obtener_directorio_descargas_predeterminado()),
     }
 
 
 def cargar_configuracion() -> dict[str, Any]:
-    """Carga los ajustes del usuario o devuelve valores por defecto."""
+    """Carga los ajustes del usuario, migrando versiones previas y saneando valores inválidos."""
     ruta = obtener_directorio_datos_usuario() / NOMBRE_ARCHIVO_CONFIG
     config = _leer_json_seguro(ruta, obtener_configuracion_predeterminada())
     if not isinstance(config, dict):
         _respaldar_archivo_corrupto(ruta, "La raíz de configuración no es un objeto JSON")
         config = obtener_configuracion_predeterminada()
 
-    predeterminado = obtener_configuracion_predeterminada()
-
-    # Asegurar que todas las claves requeridas existan
-    for clave, valor in predeterminado.items():
-        if clave not in config:
-            config[clave] = valor
-
-    return config
+    return normalizar_configuracion_usuario(config)
 
 
 def guardar_configuracion(config: dict[str, Any]) -> None:
-    """Guarda los ajustes del usuario de forma atómica."""
+    """Guarda los ajustes del usuario de forma atómica tras normalizar paleta y modo."""
     ruta = obtener_directorio_datos_usuario() / NOMBRE_ARCHIVO_CONFIG
-    _escribir_json_atomico(ruta, config)
+    normalizado = normalizar_configuracion_usuario(dict(config))
+    config.update(normalizado)
+    _escribir_json_atomico(ruta, normalizado)
 
 
 def cargar_cola() -> List[TrabajoDescarga]:

@@ -65,3 +65,76 @@ def test_tolerancia_archivo_corrupto(tmp_path: Path):
 
         archivos_broken = list(tmp_path.glob("queue.broken.*"))
         assert len(archivos_broken) == 1
+
+
+def test_migracion_configuracion_antigua_y_recuperacion_paleta_invalida(tmp_path: Path):
+    with patch("mintplay.services.persistence.obtener_directorio_datos_usuario", return_value=tmp_path):
+        ruta_cfg = tmp_path / "settings.json"
+
+        # 1. Configuración antigua: solo tiene "tema": "light" sin clave "paleta"
+        ruta_cfg.write_text(
+            json.dumps({"idioma": "es", "tema": "light", "directorio_descargas": str(tmp_path)}),
+            encoding="utf-8",
+        )
+        cfg_migrada = cargar_configuracion()
+        assert cfg_migrada["paleta"] == "mint"
+        assert cfg_migrada["tema"] == "light"
+
+        # 2. Paleta desconocida con modo válido -> recupera a "mint" manteniendo "light"
+        ruta_cfg.write_text(
+            json.dumps(
+                {
+                    "idioma": "en",
+                    "paleta": "neon_inexistente",
+                    "tema": "light",
+                    "directorio_descargas": str(tmp_path),
+                }
+            ),
+            encoding="utf-8",
+        )
+        cfg_paleta_invalida = cargar_configuracion()
+        assert cfg_paleta_invalida["paleta"] == "mint"
+        assert cfg_paleta_invalida["tema"] == "light"
+        assert cfg_paleta_invalida["idioma"] == "en"
+
+        # 3. Paleta válida ("ocean") con modo inválido -> mantiene "ocean" y recupera modo a "dark"
+        ruta_cfg.write_text(
+            json.dumps(
+                {
+                    "idioma": "es",
+                    "paleta": "ocean",
+                    "tema": "modo_invalido",
+                    "directorio_descargas": str(tmp_path),
+                }
+            ),
+            encoding="utf-8",
+        )
+        cfg_modo_invalido = cargar_configuracion()
+        assert cfg_modo_invalido["paleta"] == "ocean"
+        assert cfg_modo_invalido["tema"] == "dark"
+
+        # 4. Guardar y recargar Sakura claro y Océano oscuro
+        guardar_configuracion(
+            {
+                "idioma": "es",
+                "paleta": "sakura",
+                "tema": "light",
+                "directorio_descargas": str(tmp_path),
+            }
+        )
+        recargada_sakura = cargar_configuracion()
+        assert recargada_sakura["paleta"] == "sakura"
+        assert recargada_sakura["tema"] == "light"
+
+        guardar_configuracion(
+            {
+                "idioma": "en",
+                "paleta": "ocean",
+                "tema": "dark",
+                "directorio_descargas": str(tmp_path),
+            }
+        )
+        recargada_ocean = cargar_configuracion()
+        assert recargada_ocean["paleta"] == "ocean"
+        assert recargada_ocean["tema"] == "dark"
+
