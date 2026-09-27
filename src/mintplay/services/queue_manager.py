@@ -14,6 +14,7 @@ from ..domain.states import (
     actualizar_fase_trabajo,
     reintentar_trabajo,
 )
+from .history_manager import GestorHistorial
 from .persistence import guardar_cola
 
 logger = logging.getLogger(__name__)
@@ -140,9 +141,17 @@ class GestorCola(QObject):
     conteo_cambiado = Signal(int, int, int, int)  # total, en_espera, completados, errores
     _iniciar_en_worker = Signal(object)
 
-    def __init__(self, servicio_descarga: Any, parent: Optional[QObject] = None):
+    def __init__(
+        self,
+        servicio_descarga: Any,
+        parent: Optional[QObject] = None,
+        gestor_historial: Optional[GestorHistorial] = None,
+    ):
         super().__init__(parent)
         self.servicio = servicio_descarga
+        self.historial: GestorHistorial = (
+            gestor_historial if gestor_historial is not None else GestorHistorial(self)
+        )
         self._trabajos: List[TrabajoDescarga] = []
         self._id_trabajo_activo: Optional[str] = None
         self._temporizador_finalizacion = QTimer(self)
@@ -364,6 +373,7 @@ class GestorCola(QObject):
         if trabajo:
             actualizar_fase_trabajo(trabajo, FaseTrabajo.FINALIZADO)
             trabajo.output_path = ruta_salida
+            self.historial.registrar_trabajo_completado(trabajo)
             self._guardar()
             self.trabajo_actualizado.emit(id_trabajo)
             self._emitir_cambio_conteo()

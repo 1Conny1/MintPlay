@@ -26,6 +26,7 @@ from ..services.persistence import guardar_configuracion
 from ..services.queue_manager import GestorCola
 from ..services.runtime_paths import obtener_ruta_icono
 from .download_form import FormularioDescarga
+from .history_dialog import DialogoHistorial
 from .i18n_manager import GestorTraduccion, obtener_traductor, t
 from .queue_panel import PanelCola
 from .settings_dialog import DialogoAjustes
@@ -46,6 +47,7 @@ class VentanaPrincipal(QMainWindow):
         super().__init__(parent)
         self.gestor = gestor_cola
         self.config = configuracion
+        self._dialogo_historial: Optional[DialogoHistorial] = None
         self.traductor: GestorTraduccion = obtener_traductor(self.config.get("idioma", "es"))
         self.traductor.cambiar_idioma(self.config.get("idioma", "es"))
 
@@ -121,6 +123,17 @@ class VentanaPrincipal(QMainWindow):
 
         fila_encabezado.addStretch(1)
 
+        # Acceso discreto al historial local de descargas con icono SVG propio (history.svg)
+        self.btn_historial = QPushButton(f" {t('btn_history')}")
+        self.btn_historial.setObjectName("btnBarraSuperior")
+        self.btn_historial.setToolTip(t("tooltip_history"))
+        self.btn_historial.setAccessibleName(t("history_title"))
+        self.btn_historial.setFixedHeight(36)
+        self.btn_historial.setIconSize(QSize(16, 16))
+        self.btn_historial.setCursor(Qt.PointingHandCursor)
+        self.btn_historial.clicked.connect(self._abrir_historial)
+        fila_encabezado.addWidget(self.btn_historial)
+
         # Selector de idioma rápido [ES / EN]
         self.btn_idioma = QPushButton("EN" if self.traductor.idioma == "es" else "ES")
         self.btn_idioma.setObjectName("btnBarraSuperior")
@@ -154,10 +167,15 @@ class VentanaPrincipal(QMainWindow):
         self.layout_raiz.addLayout(fila_encabezado)
 
     def _actualizar_iconos_barra_superior(self, tema: str) -> None:
-        """Asigna los iconos SVG vectoriales de sol, luna y ajustes coloreados según el tema."""
+        """Asigna los iconos SVG vectoriales de historial, sol, luna y ajustes según el tema."""
         es_oscuro = tema == "dark"
         svg_tema = "sun.svg" if es_oscuro else "moon.svg"
         tooltip_tema = t("tooltip_theme_to_light") if es_oscuro else t("tooltip_theme_to_dark")
+
+        self.btn_historial.setText(f" {t('btn_history')}")
+        self.btn_historial.setIcon(cargar_icono_svg("history.svg", tema=tema, tamano=16))
+        self.btn_historial.setToolTip(t("tooltip_history"))
+        self.btn_historial.setAccessibleName(t("history_title"))
 
         self.btn_tema.setText("")
         self.btn_tema.setIcon(cargar_icono_svg(svg_tema, tema=tema, tamano=18))
@@ -255,6 +273,29 @@ class VentanaPrincipal(QMainWindow):
         self.setStyleSheet(generar_hoja_estilos(tema))
         self._actualizar_iconos_barra_superior(tema)
         self.panel_cola.actualizar_tema(tema)
+        if self._dialogo_historial is not None:
+            self._dialogo_historial.actualizar_tema(tema)
+
+    def _abrir_historial(self) -> DialogoHistorial:
+        """Abre o enfoca la ventana secundaria del historial local de descargas."""
+        tema_actual = self.config.get("tema", "dark")
+        if self._dialogo_historial is None:
+            self._dialogo_historial = DialogoHistorial(
+                self.gestor.historial,
+                self,
+                tema_inicial=tema_actual,
+            )
+            self._dialogo_historial.redescarga_solicitada.connect(
+                self._al_solicitar_descarga
+            )
+        else:
+            self._dialogo_historial.actualizar_tema(tema_actual)
+            self._dialogo_historial.revalidar_existencia_archivos()
+
+        self._dialogo_historial.show()
+        self._dialogo_historial.raise_()
+        self._dialogo_historial.activateWindow()
+        return self._dialogo_historial
 
     def _abrir_ajustes(self) -> None:
         dlg = DialogoAjustes(self.config, self)

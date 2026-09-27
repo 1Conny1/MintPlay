@@ -241,6 +241,10 @@ class ServicioDescargaYtDlp:
                 setattr(err_verif, "error_code", "VERIFY_FAILED")
                 raise err_verif
 
+            trabajo.file_size = verificacion.tamano_bytes
+            if trabajo.media_type == TipoMedio.VIDEO and verificacion.alto:
+                trabajo.effective_quality = f"{verificacion.alto}p"
+
             # 9. Mover de forma segura y atómica al destino final sin colisión
             nombre_final = archivo_temporal.name
             ruta_destino = resolver_ruta_sin_colision(dir_destino_final, nombre_final)

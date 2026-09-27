@@ -155,8 +155,8 @@ def generar_hoja_estilos(tema: str = "dark") -> str:
         background-color: {p["fondo"]};
     }}
 
-    /* Superficies principales de los dos paneles */
-    QFrame#panelFormulario, QFrame#panelCola, QWidget#panelFormulario, QWidget#panelCola {{
+    /* Superficies principales de los dos paneles y del historial */
+    QFrame#panelFormulario, QFrame#panelCola, QFrame#panelHistorial, QWidget#panelFormulario, QWidget#panelCola {{
         background-color: {p["superficie_panel"]};
         border: 1px solid {p["borde"]};
         border-radius: 12px;
@@ -443,6 +443,59 @@ def generar_hoja_estilos(tema: str = "dark") -> str:
         background-color: {p["peligro_fondo"]};
         border-radius: 6px;
         padding: 5px 8px;
+    }}
+
+    /* Tarjetas y controles del historial de descargas */
+    QFrame#tarjetaHistorial {{
+        background-color: {p["superficie_tarjeta"]};
+        border: 1px solid {p["borde"]};
+        border-radius: 10px;
+    }}
+
+    QFrame#tarjetaHistorial[estado_archivo="missing"] {{
+        border: 1px solid {p["peligro"]};
+    }}
+
+    QLabel#estadoArchivoHistorial {{
+        font-size: 11px;
+        font-weight: 600;
+        padding: 2px 9px;
+        border-radius: 9px;
+        background-color: {p["exito_fondo"]};
+        color: {p["exito"]};
+    }}
+
+    QLabel#estadoArchivoHistorial[estado="missing"] {{
+        background-color: {p["peligro_fondo"]};
+        color: {p["peligro_texto"]};
+    }}
+
+    QLabel#fechaTamanoHistorial {{
+        font-size: 12px;
+        color: {p["texto_secundario"]};
+        background: transparent;
+    }}
+
+    QPushButton#btnVaciarHistorial {{
+        padding: 6px 13px;
+        font-size: 12px;
+        font-weight: 600;
+        border-radius: 7px;
+        color: {p["peligro"]};
+        border: 1px solid {p["borde"]};
+        background-color: {p["superficie"]};
+    }}
+
+    QPushButton#btnVaciarHistorial:hover {{
+        background-color: {p["peligro_fondo"]};
+        border-color: {p["peligro"]};
+        color: {p["peligro_texto"]};
+    }}
+
+    QPushButton#btnVaciarHistorial:disabled {{
+        color: {p["texto_desactivado"]};
+        background-color: {p["fondo"]};
+        border-color: {p["borde_suave"]};
     }}
 
     /* Barra de progreso */

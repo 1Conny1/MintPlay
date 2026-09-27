@@ -39,6 +39,8 @@ class ResultadoVerificacion:
     es_valido: bool
     tiene_audio: bool = False
     tiene_video: bool = False
+    ancho: Optional[int] = None
+    alto: Optional[int] = None
     tamano_bytes: int = 0
     mensaje: Optional[str] = None
 
@@ -155,12 +157,27 @@ def validar_archivo_descargado(ruta_archivo: Path, tipo_esperado: TipoMedio) -> 
 def verificar_archivo_multimedia(ruta_archivo: Path, tipo_esperado: TipoMedio) -> ResultadoVerificacion:
     """Verifica el archivo descargado y devuelve un objeto de resultado detallado."""
     tamano = ruta_archivo.stat().st_size if ruta_archivo.exists() else 0
-    valido, error = validar_archivo_descargado(ruta_archivo, tipo_esperado)
-    sonda = inspeccionar_archivo(ruta_archivo) if ruta_archivo.exists() else ResultadoSonda(valido=False)
+    sonda = inspeccionar_archivo(ruta_archivo)
+    if not sonda.valido:
+        return ResultadoVerificacion(
+            es_valido=False,
+            tamano_bytes=tamano,
+            mensaje=sonda.error,
+        )
+
+    error: Optional[str] = None
+    if tipo_esperado == TipoMedio.VIDEO and not sonda.tiene_video:
+        error = "El archivo generado no contiene flujo de vídeo."
+    elif tipo_esperado == TipoMedio.AUDIO and not sonda.tiene_audio:
+        error = "El archivo generado no contiene flujo de audio."
+
+    valido = error is None
     return ResultadoVerificacion(
         es_valido=valido,
         tiene_audio=sonda.tiene_audio,
         tiene_video=sonda.tiene_video,
+        ancho=sonda.ancho,
+        alto=sonda.alto,
         tamano_bytes=tamano,
         mensaje=error if not valido else "Archivo verificado correctamente",
     )
