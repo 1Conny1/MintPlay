@@ -115,6 +115,7 @@ class PanelCola(QFrame):
         self.gestor.trabajo_anadido.connect(self._al_anadir_trabajo)
         self.gestor.trabajo_actualizado.connect(self._al_actualizar_trabajo)
         self.gestor.trabajo_eliminado.connect(self._al_eliminar_trabajo)
+        self.gestor.orden_cambiado.connect(self._al_cambiar_orden_cola)
         self.gestor.conteo_cambiado.connect(self._al_cambiar_conteo)
 
         obtener_traductor().idioma_cambiado.connect(self.actualizar_textos_idioma)
@@ -122,6 +123,7 @@ class PanelCola(QFrame):
         # Cargar trabajos existentes
         for trabajo in self.gestor.trabajos:
             self._crear_tarjeta(trabajo)
+        self._sincronizar_orden_visual()
         self._recalcular_posiciones_espera()
         self._actualizar_visibilidad_vacio()
         total, espera, completos, errores = self.gestor.obtener_conteo_actual()
@@ -141,6 +143,48 @@ class PanelCola(QFrame):
             alto=76,
         )
         self.lbl_vacio_icono.setPixmap(pixmap)
+
+    def obtener_ids_tarjetas_visuales(self) -> list[str]:
+        """Devuelve los IDs de las tarjetas en el orden visual real dentro de layout_lista."""
+        ids: list[str] = []
+        for i in range(self.layout_lista.count()):
+            item = self.layout_lista.itemAt(i)
+            widget = item.widget() if item is not None else None
+            if isinstance(widget, TarjetaTrabajo):
+                ids.append(widget.trabajo_id)
+        return ids
+
+    def _sincronizar_orden_visual(self) -> bool:
+        """Reordena los widgets existentes en layout_lista según el orden canónico del modelo sin recrearlos."""
+        orden_deseado = [
+            t_item.id for t_item in self.gestor.trabajos if t_item.id in self._tarjetas
+        ]
+        orden_actual = self.obtener_ids_tarjetas_visuales()
+        if orden_actual == orden_deseado:
+            return False
+
+        valor_scroll = self.scroll_area.verticalScrollBar().value()
+        widget_foco = self.focusWidget()
+
+        self.contenedor_tarjetas.setUpdatesEnabled(False)
+        try:
+            for indice_destino, id_trabajo in enumerate(orden_deseado):
+                tarjeta = self._tarjetas.get(id_trabajo)
+                if tarjeta is None:
+                    continue
+                self.layout_lista.insertWidget(indice_destino, tarjeta)
+        finally:
+            self.contenedor_tarjetas.setUpdatesEnabled(True)
+
+        if widget_foco is not None and widget_foco.isVisible():
+            widget_foco.setFocus()
+        self.scroll_area.verticalScrollBar().setValue(valor_scroll)
+        return True
+
+    def _al_cambiar_orden_cola(self) -> None:
+        """Sincroniza el orden de los widgets y recalcula los ordinales de espera."""
+        self._sincronizar_orden_visual()
+        self._recalcular_posiciones_espera()
 
     def _calcular_posicion_espera(self, id_trabajo: str) -> Optional[int]:
         pos = 1
@@ -177,8 +221,10 @@ class PanelCola(QFrame):
         trabajo = self.gestor.obtener_trabajo(id_trabajo)
         if trabajo and id_trabajo not in self._tarjetas:
             tarjeta = self._crear_tarjeta(trabajo)
+            self._sincronizar_orden_visual()
             pos = self._calcular_posicion_espera(id_trabajo)
             tarjeta.actualizar_datos(trabajo, posicion_cola=pos)
+            self._recalcular_posiciones_espera()
 
     def _al_actualizar_trabajo(self, id_trabajo: str) -> None:
         trabajo = self.gestor.obtener_trabajo(id_trabajo)
@@ -191,13 +237,17 @@ class PanelCola(QFrame):
         else:
             nueva = self._crear_tarjeta(trabajo)
             nueva.actualizar_datos(trabajo, posicion_cola=pos)
-        self._recalcular_posiciones_espera()
+        if self._sincronizar_orden_visual():
+            self._recalcular_posiciones_espera()
 
     def _al_eliminar_trabajo(self, id_trabajo: str) -> None:
         tarjeta = self._tarjetas.pop(id_trabajo, None)
         if tarjeta:
             self.layout_lista.removeWidget(tarjeta)
+            tarjeta.hide()
+            tarjeta.setParent(None)
             tarjeta.deleteLater()
+        self._sincronizar_orden_visual()
         self._recalcular_posiciones_espera()
         self._actualizar_visibilidad_vacio()
 

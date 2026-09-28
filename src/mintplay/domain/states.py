@@ -2,9 +2,38 @@
 
 from __future__ import annotations
 
-from typing import Set
+from typing import Iterable, List, Set
 
 from .models import EstadoTrabajo, FaseTrabajo, TrabajoDescarga
+
+
+def prioridad_orden_cola(trabajo: TrabajoDescarga) -> int:
+    """Devuelve la prioridad de orden visual y de modelo para un trabajo en la cola.
+
+    0: Activo (PREPARING / DOWNLOADING / POSTPROCESSING / VERIFYING) — siempre arriba.
+    1: Completado (durante su ventana de confirmación de 5 segundos).
+    2: En espera (QUEUED) — en orden estricto FIFO.
+    3: Fallido, interrumpido o cancelado — debajo de los activos y en espera.
+    """
+    if trabajo.status == EstadoTrabajo.ACTIVO or trabajo.phase in (
+        FaseTrabajo.PREPARANDO,
+        FaseTrabajo.DESCARGANDO,
+        FaseTrabajo.PROCESANDO,
+        FaseTrabajo.VERIFICANDO,
+    ):
+        return 0
+    if trabajo.status == EstadoTrabajo.COMPLETADO or trabajo.phase == FaseTrabajo.FINALIZADO:
+        return 1
+    if trabajo.status == EstadoTrabajo.EN_ESPERA:
+        return 2
+    return 3
+
+
+def ordenar_trabajos_canonicamente(
+    trabajos: Iterable[TrabajoDescarga],
+) -> List[TrabajoDescarga]:
+    """Ordena establemente los trabajos según `prioridad_orden_cola` preservando el orden FIFO dentro de cada grupo."""
+    return sorted(trabajos, key=prioridad_orden_cola)
 
 
 class TransicionInvalidaError(ValueError):

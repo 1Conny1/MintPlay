@@ -10,8 +10,9 @@ import time
 from pathlib import Path
 from typing import Any, List, Optional
 
-from ..domain.models import EstadoTrabajo, RegistroHistorial, TrabajoDescarga
-from ..domain.states import marcar_interrumpido
+from ..domain.format_policy import verificar_compatibilidad
+from ..domain.models import EstadoTrabajo, RegistroHistorial, TipoMedio, TrabajoDescarga
+from ..domain.states import marcar_interrumpido, ordenar_trabajos_canonicamente
 from .runtime_paths import (
     obtener_directorio_datos_usuario,
     obtener_directorio_descargas_predeterminado,
@@ -70,19 +71,40 @@ def _leer_json_seguro(ruta: Path, defecto: Any) -> Any:
 PALETAS_VALIDAS = ("mint", "sakura", "indigo", "amber", "ocean")
 MODOS_TEMA_VALIDOS = ("light", "dark")
 IDIOMAS_VALIDOS = ("es", "en")
+TIPOS_MEDIO_VALIDOS = ("video", "audio")
 
 
-def normalizar_configuracion_usuario(config: dict[str, Any]) -> dict[str, Any]:
-    """Normaliza y migra la configuración de idioma, paleta, modo de tema y carpeta.
+def es_carpeta_destino_valida(ruta_str: str) -> bool:
+    """Comprueba que la carpeta exista en disco y tenga permiso de escritura."""
+    if not ruta_str or not isinstance(ruta_str, str):
+        return False
+    try:
+        p = Path(ruta_str.strip())
+        return p.exists() and p.is_dir() and os.access(str(p), os.W_OK)
+    except OSError:
+        return False
+
+
+def normalizar_configuracion_usuario(
+    config: dict[str, Any],
+    verificar_carpeta_en_disco: bool = False,
+) -> dict[str, Any]:
+    """Normaliza y migra la configuración de idioma, paleta, modo, notificaciones y opciones de descarga.
 
     - Si una configuración antigua solo tiene `tema` ('light'/'dark'), conserva ese modo
       y asigna la paleta predeterminada ('mint').
-    - Si `paleta` o `tema` contienen valores desconocidos o corruptos, recupera a 'mint'
-      y/o al modo válido ('dark' por defecto) sin bloquear el arranque.
+    - Valida formato y calidad por separado para vídeo y audio con `verificar_compatibilidad`.
+    - Nunca persiste ni restaura URL ni nombre de archivo personalizado.
+    - Si `verificar_carpeta_en_disco` es True y la carpeta guardada ya no existe o no es escribible,
+      restaura la carpeta predeterminada segura y marca `carpeta_restaurada_por_invalida = True`.
     """
     predeterminado = obtener_configuracion_predeterminada()
     if not isinstance(config, dict):
         return predeterminado
+
+    # Eliminar cualquier rastro accidental de URL o nombre de archivo
+    config.pop("url", None)
+    config.pop("custom_name", None)
 
     # 1. Idioma
     idioma_raw = config.get("idioma")
@@ -101,7 +123,6 @@ def normalizar_configuracion_usuario(config: dict[str, Any]) -> dict[str, Any]:
     cand_paleta = paleta_raw.strip().lower() if isinstance(paleta_raw, str) else ""
     cand_modo = tema_raw.strip().lower() if isinstance(tema_raw, str) else ""
 
-    # Soportar valores combinados tipo "sakura:light" o "ocean_dark"
     for sep in (":", "_", "-"):
         if sep in cand_modo:
             partes = [p.strip() for p in cand_modo.split(sep, 1)]
@@ -124,19 +145,78 @@ def normalizar_configuracion_usuario(config: dict[str, Any]) -> dict[str, Any]:
     paleta = cand_paleta if cand_paleta in PALETAS_VALIDAS else predeterminado["paleta"]
     modo = cand_modo if cand_modo in MODOS_TEMA_VALIDOS else predeterminado["tema"]
 
-    # 3. Directorio de descargas
+    # 3. Notificaciones de descargas (activadas por defecto)
+    notif_raw = config.get("notificaciones_activas", predeterminado["notificaciones_activas"])
+    notificaciones_activas = (
+        notif_raw if isinstance(notif_raw, bool) else predeterminado["notificaciones_activas"]
+    )
+
+    # 4. Últimas opciones de descarga separadas para vídeo y audio
+    tipo_raw = config.get("ultimo_tipo_medio")
+    ultimo_tipo_medio = (
+        tipo_raw.strip().lower()
+        if isinstance(tipo_raw, str) and tipo_raw.strip().lower() in TIPOS_MEDIO_VALIDOS
+        else predeterminado["ultimo_tipo_medio"]
+    )
+
+    v_fmt_raw = config.get("video_formato")
+    v_cal_raw = config.get("video_calidad")
+    _, video_formato, video_calidad = verificar_compatibilidad(
+        TipoMedio.VIDEO,
+        v_fmt_raw.strip().lower() if isinstance(v_fmt_raw, str) else predeterminado["video_formato"],
+        v_cal_raw.strip().lower() if isinstance(v_cal_raw, str) else predeterminado["video_calidad"],
+    )
+
+    a_fmt_raw = config.get("audio_formato")
+    a_cal_raw = config.get("audio_calidad")
+    _, audio_formato, audio_calidad = verificar_compatibilidad(
+        TipoMedio.AUDIO,
+        a_fmt_raw.strip().lower() if isinstance(a_fmt_raw, str) else predeterminado["audio_formato"],
+        a_cal_raw.strip().lower() if isinstance(a_cal_raw, str) else predeterminado["audio_calidad"],
+    )
+
+    # 5. Directorio de descargas
     dir_raw = config.get("directorio_descargas")
+    tenia_dir_explicito = isinstance(dir_raw, str) and bool(dir_raw.strip())
     directorio = (
         dir_raw.strip()
-        if isinstance(dir_raw, str) and dir_raw.strip()
+        if tenia_dir_explicito
         else predeterminado["directorio_descargas"]
     )
+    carpeta_restaurada = bool(config.get("carpeta_restaurada_por_invalida", False))
+    if verificar_carpeta_en_disco and tenia_dir_explicito:
+        if not es_carpeta_destino_valida(directorio):
+            directorio = predeterminado["directorio_descargas"]
+            carpeta_restaurada = True
 
     config["idioma"] = idioma
     config["paleta"] = paleta
     config["tema"] = modo
+    config["notificaciones_activas"] = notificaciones_activas
+    config["ultimo_tipo_medio"] = ultimo_tipo_medio
+    config["video_formato"] = video_formato
+    config["video_calidad"] = video_calidad
+    config["audio_formato"] = audio_formato
+    config["audio_calidad"] = audio_calidad
     config["directorio_descargas"] = directorio
+    if carpeta_restaurada:
+        config["carpeta_restaurada_por_invalida"] = True
+    else:
+        config.pop("carpeta_restaurada_por_invalida", None)
     return config
+
+
+def restablecer_opciones_descarga(config: dict[str, Any]) -> dict[str, Any]:
+    """Restablece únicamente las preferencias de descarga y carpeta sin alterar idioma, tema ni cola."""
+    predeterminado = obtener_configuracion_predeterminada()
+    config["ultimo_tipo_medio"] = predeterminado["ultimo_tipo_medio"]
+    config["video_formato"] = predeterminado["video_formato"]
+    config["video_calidad"] = predeterminado["video_calidad"]
+    config["audio_formato"] = predeterminado["audio_formato"]
+    config["audio_calidad"] = predeterminado["audio_calidad"]
+    config["directorio_descargas"] = predeterminado["directorio_descargas"]
+    config.pop("carpeta_restaurada_por_invalida", None)
+    return normalizar_configuracion_usuario(config)
 
 
 def obtener_configuracion_predeterminada() -> dict[str, Any]:
@@ -145,6 +225,12 @@ def obtener_configuracion_predeterminada() -> dict[str, Any]:
         "idioma": "es",
         "paleta": "mint",
         "tema": "dark",
+        "notificaciones_activas": True,
+        "ultimo_tipo_medio": "video",
+        "video_formato": "mp4",
+        "video_calidad": "best",
+        "audio_formato": "mp3",
+        "audio_calidad": "192",
         "directorio_descargas": str(obtener_directorio_descargas_predeterminado()),
     }
 
@@ -157,19 +243,22 @@ def cargar_configuracion() -> dict[str, Any]:
         _respaldar_archivo_corrupto(ruta, "La raíz de configuración no es un objeto JSON")
         config = obtener_configuracion_predeterminada()
 
-    return normalizar_configuracion_usuario(config)
+    return normalizar_configuracion_usuario(config, verificar_carpeta_en_disco=True)
 
 
 def guardar_configuracion(config: dict[str, Any]) -> None:
-    """Guarda los ajustes del usuario de forma atómica tras normalizar paleta y modo."""
+    """Guarda los ajustes del usuario de forma atómica tras normalizar preferencias."""
     ruta = obtener_directorio_datos_usuario() / NOMBRE_ARCHIVO_CONFIG
-    normalizado = normalizar_configuracion_usuario(dict(config))
+    copia = dict(config)
+    copia.pop("carpeta_restaurada_por_invalida", None)
+    normalizado = normalizar_configuracion_usuario(copia, verificar_carpeta_en_disco=False)
+    normalizado.pop("carpeta_restaurada_por_invalida", None)
     config.update(normalizado)
     _escribir_json_atomico(ruta, normalizado)
 
 
 def cargar_cola() -> List[TrabajoDescarga]:
-    """Carga la cola guardada y marca como interrumpidos los trabajos activos pendientes."""
+    """Carga la cola guardada, marca interrumpidos los activos y aplica el orden canónico."""
     ruta = obtener_directorio_datos_usuario() / NOMBRE_ARCHIVO_COLA
     datos = _leer_json_seguro(ruta, [])
 
@@ -187,16 +276,14 @@ def cargar_cola() -> List[TrabajoDescarga]:
     elif ruta.exists():
         _respaldar_archivo_corrupto(ruta, "La raíz de queue.json no es una lista")
 
-    return trabajos
+    return ordenar_trabajos_canonicamente(trabajos)
 
 
 def guardar_cola(trabajos: List[TrabajoDescarga]) -> None:
-    """Guarda los trabajos activos, pendientes y con error/cancelados.
-
-    Filtra los trabajos completados cuyo ciclo haya finalizado para no acumular basura.
-    """
+    """Guarda los trabajos activos, pendientes y con error/cancelados en su orden canónico."""
     ruta = obtener_directorio_datos_usuario() / NOMBRE_ARCHIVO_COLA
-    datos = [t.a_dict() for t in trabajos]
+    ordenados = ordenar_trabajos_canonicamente(trabajos)
+    datos = [t.a_dict() for t in ordenados]
     _escribir_json_atomico(ruta, datos)
 
 

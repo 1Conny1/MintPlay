@@ -654,3 +654,229 @@ def test_recorrido_cinco_paletas_claro_oscuro_en_vivo_y_sincronizacion(
         gestor.cerrar()
 
 
+def test_notificaciones_completado_fallido_deduplicacion_sin_url_ni_ruta_es_en(
+    qapp, tmp_path: Path
+):
+    """Prueba avisos de completado/error en ES y EN, exclusión de progreso/cancelación, deduplicación y privacidad."""
+    with patch(
+        "mintplay.services.persistence.obtener_directorio_datos_usuario",
+        return_value=tmp_path,
+    ):
+        traductor = obtener_traductor("es")
+        traductor.cambiar_idioma("es")
+        gestor = GestorCola(ServicioInerte())
+        gestor._iniciar_en_worker.disconnect(gestor._worker.procesar)
+
+        ventana = VentanaPrincipal(
+            gestor,
+            {"idioma": "es", "tema": "dark", "directorio_descargas": str(tmp_path)},
+        )
+        assert ventana.notificaciones.activas is True
+        assert ventana.config["notificaciones_activas"] is True
+
+        t_ok = TrabajoDescarga(
+            id="notif_1",
+            url="https://www.youtube.com/watch?v=secreto123",
+            display_title="Concierto acústico completo de primavera en alta definición 2026 con invitados especiales",
+            platform_hint="YouTube",
+            target_extension="mp4",
+            destination_dir=str(tmp_path),
+        )
+        gestor.anadir_trabajo(t_ok)
+
+        # Progreso y fases intermedias (PREPARANDO, DESCARGANDO, PROCESANDO, VERIFICANDO) NO emiten aviso
+        gestor._a_fase_recibida("notif_1", FaseTrabajo.DESCARGANDO.value)
+        gestor._al_progreso_recibido("notif_1", 50.0, 50000, 100000, 10240.0, 5)
+        gestor._a_fase_recibida("notif_1", FaseTrabajo.PROCESANDO.value)
+        gestor._a_fase_recibida("notif_1", FaseTrabajo.VERIFICANDO.value)
+        assert len(ventana.notificaciones.historial_notificaciones) == 0
+
+        # Al finalizar la verificación (COMPLETED), se emite 1 notificación en español sin ruta ni URL
+        ruta_salida = str(tmp_path / "Users" / "dysgt" / "concierto.mp4")
+        gestor._al_trabajo_finalizado("notif_1", ruta_salida)
+        assert len(ventana.notificaciones.historial_notificaciones) == 1
+        aviso_es = ventana.notificaciones.historial_notificaciones[0]
+        assert aviso_es.estado == "completed"
+        assert aviso_es.idioma == "es"
+        assert aviso_es.titulo == "Descarga completada"
+        assert "MP4" in aviso_es.mensaje
+        assert "https://" not in aviso_es.mensaje
+        assert str(tmp_path) not in aviso_es.mensaje
+        assert "…" in aviso_es.mensaje  # Nombre largo truncado de forma legible
+
+        # Señal terminal duplicada del mismo intento NO genera duplicado
+        ventana.notificaciones.notificar_completado(t_ok)
+        assert len(ventana.notificaciones.historial_notificaciones) == 1
+
+        # Cancelación voluntaria NO genera aviso
+        gestor._temporizador_finalizacion.stop()
+        gestor._al_vencer_temporizador_finalizacion()
+        t_cancel = TrabajoDescarga(
+            id="notif_cancel",
+            url="https://vimeo.com/999888",
+            display_title="Clip Cancelado",
+            destination_dir=str(tmp_path),
+        )
+        gestor.anadir_trabajo(t_cancel)
+        gestor._al_trabajo_cancelado("notif_cancel")
+        assert len(ventana.notificaciones.historial_notificaciones) == 1
+
+        # Cambiar idioma a English y probar fallo de descarga con ventana minimizada
+        ventana._alternar_idioma()
+        ventana.showMinimized()
+        t_fail = TrabajoDescarga(
+            id="notif_fail",
+            url="https://www.facebook.com/reel/1386830136202564",
+            display_title="https://www.facebook.com/reel/1386830136202564 C:\\Users\\dysgt\\Downloads\\secreto.mp4",
+            platform_hint="Facebook",
+            target_extension="mp4",
+            destination_dir=str(tmp_path),
+        )
+        gestor.anadir_trabajo(t_fail)
+        gestor._al_trabajo_fallido("notif_fail", "NETWORK_ERROR", "Timeout")
+
+        assert len(ventana.notificaciones.historial_notificaciones) == 2
+        aviso_en = ventana.notificaciones.historial_notificaciones[1]
+        assert aviso_en.estado == "failed"
+        assert aviso_en.idioma == "en"
+        assert aviso_en.titulo == "Download failed"
+        assert "https://" not in aviso_en.mensaje
+        assert "C:\\Users" not in aviso_en.mensaje
+        assert aviso_en.ventana_en_segundo_plano is True
+
+        # Pulsar el aviso enfoca/restaura la ventana sin romper el flujo
+        ventana.notificaciones.enfocar_ventana_principal()
+        assert not ventana.isMinimized()
+
+        # Desactivar notificaciones desde Ajustes y verificar persistencia y silencio
+        dlg_ajustes = DialogoAjustes(ventana.config, ventana)
+        dlg_ajustes.configuracion_guardada.connect(ventana._al_actualizar_ajustes)
+        assert dlg_ajustes.btn_notif_activas.isChecked() is True
+        dlg_ajustes.seleccionar_notificaciones(False)
+        assert dlg_ajustes.btn_notif_inactivas.isChecked() is True
+        assert ventana.notificaciones.activas is False
+        assert cargar_configuracion()["notificaciones_activas"] is False
+
+        # Reintentar t_fail (attempt 2) y completarlo con notificaciones desactivadas -> no añade aviso
+        gestor.reintentar_trabajo("notif_fail")
+        gestor._a_fase_recibida("notif_fail", FaseTrabajo.DESCARGANDO.value)
+        gestor._a_fase_recibida("notif_fail", FaseTrabajo.VERIFICANDO.value)
+        gestor._al_trabajo_finalizado("notif_fail", str(tmp_path / "reel.mp4"))
+        assert len(ventana.notificaciones.historial_notificaciones) == 2
+
+        traductor.cambiar_idioma("es")
+        dlg_ajustes.close()
+        ventana.close()
+        gestor.cerrar()
+
+
+def test_recordar_ultimas_opciones_separadas_video_audio_carpeta_y_restablecer(
+    qapp, tmp_path: Path
+):
+    """Prueba memoria por separado de vídeo (MKV 720p) y audio (MP3 256), reinicio, carpeta movida y restablecimiento."""
+    with patch(
+        "mintplay.services.persistence.obtener_directorio_datos_usuario",
+        return_value=tmp_path,
+    ):
+        traductor = obtener_traductor("es")
+        traductor.cambiar_idioma("es")
+        carpeta_custom = tmp_path / "descargas_musica"
+        carpeta_custom.mkdir()
+
+        gestor = GestorCola(ServicioInerte())
+        gestor._iniciar_en_worker.disconnect(gestor._worker.procesar)
+
+        ventana = VentanaPrincipal(
+            gestor,
+            {"idioma": "es", "paleta": "sakura", "tema": "light", "directorio_descargas": str(tmp_path)},
+        )
+        form = ventana.formulario
+
+        # 1. Configurar Vídeo -> MKV -> Hasta 720p
+        idx_video = form.cmb_tipo.findData(TipoMedio.VIDEO.value)
+        form.cmb_tipo.setCurrentIndex(idx_video)
+        form.cmb_formato.setCurrentIndex(form.cmb_formato.findData("mkv"))
+        form.cmb_calidad.setCurrentIndex(form.cmb_calidad.findData("720p"))
+
+        # 2. Cambiar a Audio -> MP3 -> 256 kb/s y elegir carpeta personalizada
+        idx_audio = form.cmb_tipo.findData(TipoMedio.AUDIO.value)
+        form.cmb_tipo.setCurrentIndex(idx_audio)
+        form.cmb_formato.setCurrentIndex(form.cmb_formato.findData("mp3"))
+        form.cmb_calidad.setCurrentIndex(form.cmb_calidad.findData("256"))
+        form.establecer_directorio_destino(str(carpeta_custom))
+
+        # 3. Alternar entre Vídeo y Audio durante la sesión restaura la selección de cada tipo
+        form.cmb_tipo.setCurrentIndex(idx_video)
+        assert form.cmb_formato.currentData() == "mkv"
+        assert form.cmb_calidad.currentData() == "720p"
+
+        form.cmb_tipo.setCurrentIndex(idx_audio)
+        assert form.cmb_formato.currentData() == "mp3"
+        assert form.cmb_calidad.currentData() == "256"
+
+        # 4. Confirmar una descarga en Audio (con URL y nombre personalizado)
+        form.txt_url.setText("https://www.youtube.com/watch?v=audio_test")
+        form.txt_nombre.setText("Mi Canción Favorita")
+        form._al_pulsar_anadir()
+
+        # El formulario queda limpio para un enlace nuevo pero conserva las opciones elegidas
+        assert form.txt_url.text() == ""
+        assert form.txt_nombre.text() == ""
+        cfg_disco = cargar_configuracion()
+        assert cfg_disco["ultimo_tipo_medio"] == "audio"
+        assert cfg_disco["audio_formato"] == "mp3"
+        assert cfg_disco["audio_calidad"] == "256"
+        assert cfg_disco["video_formato"] == "mkv"
+        assert cfg_disco["video_calidad"] == "720p"
+        assert cfg_disco["directorio_descargas"] == str(carpeta_custom)
+        assert "url" not in cfg_disco
+        assert "custom_name" not in cfg_disco
+
+        # 5. Simular reinicio de la aplicación: restaura Audio (MP3 256) y también recuerda Vídeo (MKV 720p)
+        for t_job in gestor.trabajos:
+            t_job.status = EstadoTrabajo.COMPLETADO
+        ventana.close()
+
+        ventana2 = VentanaPrincipal(gestor, cargar_configuracion())
+        form2 = ventana2.formulario
+        assert form2.txt_url.text() == ""
+        assert form2.txt_nombre.text() == ""
+        assert form2.cmb_tipo.currentData() == TipoMedio.AUDIO.value
+        assert form2.cmb_formato.currentData() == "mp3"
+        assert form2.cmb_calidad.currentData() == "256"
+        assert form2.txt_carpeta.text() == str(carpeta_custom)
+
+        # Al cambiar a Vídeo tras el reinicio, conserva MKV 720p
+        form2.cmb_tipo.setCurrentIndex(form2.cmb_tipo.findData(TipoMedio.VIDEO.value))
+        assert form2.cmb_formato.currentData() == "mkv"
+        assert form2.cmb_calidad.currentData() == "720p"
+        ventana2.close()
+
+        # 6. Si la carpeta guardada desaparece antes de abrir, vuelve a predeterminada y muestra aviso
+        carpeta_custom.rmdir()
+        cfg_carpeta_movida = cargar_configuracion()
+        assert cfg_carpeta_movida["carpeta_restaurada_por_invalida"] is True
+        ventana3 = VentanaPrincipal(gestor, cfg_carpeta_movida)
+        assert ventana3.formulario.lbl_error_carpeta.isHidden() is False
+        assert "restauró la carpeta predeterminada" in ventana3.formulario.lbl_error_carpeta.text()
+
+        # 7. Pulsar «Restablecer opciones de descarga» en Ajustes vuelve a Vídeo MP4 Mejor disponible
+        # sin alterar paleta (sakura), tema (light), idioma ni cola
+        dlg_ajustes = DialogoAjustes(ventana3.config, ventana3)
+        dlg_ajustes.restablecer_opciones_solicitado.connect(ventana3.restablecer_opciones_descarga)
+        dlg_ajustes.configuracion_guardada.connect(ventana3._al_actualizar_ajustes)
+        dlg_ajustes.btn_restablecer_opciones.click()
+
+        assert ventana3.formulario.cmb_tipo.currentData() == TipoMedio.VIDEO.value
+        assert ventana3.formulario.cmb_formato.currentData() == "mp4"
+        assert ventana3.formulario.cmb_calidad.currentData() == "best"
+        assert ventana3.config["paleta"] == "sakura"
+        assert ventana3.config["tema"] == "light"
+        assert len(gestor.trabajos) == 1
+
+        dlg_ajustes.close()
+        ventana3.close()
+        gestor.cerrar()
+
+
+

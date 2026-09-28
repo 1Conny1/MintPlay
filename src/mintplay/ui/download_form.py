@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 
-from PySide6.QtCore import Qt, Signal, QUrl
+from PySide6.QtCore import Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QComboBox,
@@ -28,6 +28,7 @@ from ..domain.format_policy import (
     obtener_calidad_predeterminada,
     obtener_clave_ayuda_calidad,
     obtener_formato_predeterminado,
+    verificar_compatibilidad,
 )
 from ..domain.models import (
     FormatoAudio,
@@ -41,6 +42,10 @@ from ..domain.platforms import (
     resolver_plataforma,
 )
 from ..services.output_paths import sanitizar_nombre_archivo
+from ..services.persistence import (
+    es_carpeta_destino_valida,
+    normalizar_configuracion_usuario,
+)
 from .i18n_manager import obtener_traductor, t
 
 
@@ -87,10 +92,31 @@ class FormularioDescarga(QFrame):
 
     descarga_solicitada = Signal(object, str)  # OpcionesDescarga, plataforma_estimada
 
-    def __init__(self, directorio_predeterminado: str, parent: Optional[QWidget] = None):
+    def __init__(
+        self,
+        directorio_predeterminado: str,
+        parent: Optional[QWidget] = None,
+        config_inicial: Optional[Dict[str, Any]] = None,
+    ):
         super().__init__(parent)
         self.setObjectName("panelFormulario")
         self._directorio_destino = directorio_predeterminado
+        self._tipo_actual: TipoMedio = TipoMedio.VIDEO
+        self._clave_error_carpeta: Optional[str] = None
+        self._preferencias_por_tipo: Dict[TipoMedio, Dict[str, str]] = {
+            TipoMedio.VIDEO: {
+                "formato": obtener_formato_predeterminado(TipoMedio.VIDEO),
+                "calidad": obtener_calidad_predeterminada(
+                    obtener_formato_predeterminado(TipoMedio.VIDEO)
+                ),
+            },
+            TipoMedio.AUDIO: {
+                "formato": obtener_formato_predeterminado(TipoMedio.AUDIO),
+                "calidad": obtener_calidad_predeterminada(
+                    obtener_formato_predeterminado(TipoMedio.AUDIO)
+                ),
+            },
+        }
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 18, 18, 18)
@@ -162,6 +188,7 @@ class FormularioDescarga(QFrame):
         self.lbl_calidad = QLabel(t("quality_label"))
         self.lbl_calidad.setObjectName("etiquetaCampo")
         self.cmb_calidad = QComboBox()
+        self.cmb_calidad.currentIndexChanged.connect(self._al_cambiar_calidad)
         self.lbl_ayuda_calidad = QLabel("")
         self.lbl_ayuda_calidad.setObjectName("etiquetaAyuda")
         self.lbl_ayuda_calidad.setWordWrap(True)
@@ -211,9 +238,36 @@ class FormularioDescarga(QFrame):
         self.btn_anadir.clicked.connect(self._al_pulsar_anadir)
         layout.addWidget(self.btn_anadir)
 
-        # Inicializar listas dependientes
-        self._poblar_formatos(TipoMedio.VIDEO)
+        # Inicializar listas dependientes y preferencias recordadas
+        if config_inicial is not None:
+            self.aplicar_preferencias_desde_config(config_inicial)
+        elif not es_carpeta_destino_valida(self._directorio_destino):
+            cfg_norm = normalizar_configuracion_usuario(
+                {"directorio_descargas": self._directorio_destino}
+            )
+            self.aplicar_preferencias_desde_config(cfg_norm)
+        else:
+            self._poblar_formatos(
+                TipoMedio.VIDEO,
+                preservar_formato=self._preferencias_por_tipo[TipoMedio.VIDEO]["formato"],
+                preservar_calidad=self._preferencias_por_tipo[TipoMedio.VIDEO]["calidad"],
+            )
+
         obtener_traductor().idioma_cambiado.connect(self.actualizar_textos_idioma)
+
+    def _guardar_seleccion_actual_en_memoria(self) -> None:
+        """Registra en memoria el formato y calidad vigentes del tipo de medio actual si son compatibles."""
+        formato = self.cmb_formato.currentData()
+        calidad = self.cmb_calidad.currentData()
+        if (
+            formato
+            and calidad
+            and verificar_compatibilidad(self._tipo_actual, str(formato), str(calidad))
+        ):
+            self._preferencias_por_tipo[self._tipo_actual] = {
+                "formato": str(formato),
+                "calidad": str(calidad),
+            }
 
     def _al_cambiar_url(self, texto: str) -> None:
         self.lbl_error_url.setVisible(False)
@@ -223,28 +277,56 @@ class FormularioDescarga(QFrame):
         tipo_val = self.cmb_tipo.currentData()
         if not tipo_val:
             return
-        tipo = TipoMedio(tipo_val)
-        self._poblar_formatos(tipo)
+        self._guardar_seleccion_actual_en_memoria()
+        nuevo_tipo = TipoMedio(tipo_val)
+        self._tipo_actual = nuevo_tipo
+        pref = self._preferencias_por_tipo.get(nuevo_tipo, {})
+        self._poblar_formatos(
+            nuevo_tipo,
+            preservar_formato=pref.get("formato"),
+            preservar_calidad=pref.get("calidad"),
+        )
 
-    def _poblar_formatos(self, tipo: TipoMedio, preservar_formato: Optional[str] = None) -> None:
+    def _poblar_formatos(
+        self,
+        tipo: TipoMedio,
+        preservar_formato: Optional[str] = None,
+        preservar_calidad: Optional[str] = None,
+    ) -> None:
         self.cmb_formato.blockSignals(True)
         self.cmb_formato.clear()
         formatos = FORMATOS_POR_TIPO.get(tipo, [])
         for fmt in formatos:
             self.cmb_formato.addItem(fmt.upper(), fmt)
 
-        objetivo = preservar_formato if preservar_formato in formatos else obtener_formato_predeterminado(tipo)
+        objetivo = (
+            preservar_formato
+            if preservar_formato in formatos
+            else obtener_formato_predeterminado(tipo)
+        )
         idx = self.cmb_formato.findData(objetivo)
         if idx >= 0:
             self.cmb_formato.setCurrentIndex(idx)
         self.cmb_formato.blockSignals(False)
 
-        self._poblar_calidades(self.cmb_formato.currentData())
+        formato_elegido = self.cmb_formato.currentData()
+        calidad_candidata = (
+            preservar_calidad
+            if preservar_calidad is not None
+            else self._preferencias_por_tipo.get(tipo, {}).get("calidad")
+        )
+        self._poblar_calidades(formato_elegido, preservar_calidad=calidad_candidata)
 
     def _al_cambiar_formato(self) -> None:
         formato = self.cmb_formato.currentData()
         if formato:
-            self._poblar_calidades(formato)
+            calidad_previa = self._preferencias_por_tipo.get(self._tipo_actual, {}).get(
+                "calidad"
+            )
+            self._poblar_calidades(formato, preservar_calidad=calidad_previa)
+
+    def _al_cambiar_calidad(self) -> None:
+        self._guardar_seleccion_actual_en_memoria()
 
     def _actualizar_etiqueta_y_ayuda_calidad(self, formato: str) -> None:
         tipo_val = self.cmb_tipo.currentData()
@@ -283,9 +365,19 @@ class FormularioDescarga(QFrame):
 
         self.cmb_calidad.blockSignals(False)
         self._actualizar_etiqueta_y_ayuda_calidad(formato)
+        self._guardar_seleccion_actual_en_memoria()
 
     def _traducir_etiqueta_calidad(self, cal: str) -> str:
         return traducir_etiqueta_calidad(cal)
+
+    def _mostrar_error_o_aviso_carpeta(self, clave_i18n: str) -> None:
+        self._clave_error_carpeta = clave_i18n
+        self.lbl_error_carpeta.setText(t(clave_i18n))
+        self.lbl_error_carpeta.setVisible(True)
+
+    def _ocultar_error_carpeta(self) -> None:
+        self._clave_error_carpeta = None
+        self.lbl_error_carpeta.setVisible(False)
 
     def _seleccionar_carpeta(self) -> None:
         carpeta = QFileDialog.getExistingDirectory(
@@ -297,11 +389,93 @@ class FormularioDescarga(QFrame):
         if carpeta:
             self.establecer_directorio_destino(carpeta)
 
-    def establecer_directorio_destino(self, carpeta: str) -> None:
+    def establecer_directorio_destino(
+        self, carpeta: str, mostrar_aviso_restauracion: bool = False
+    ) -> None:
         self._directorio_destino = carpeta
         self.txt_carpeta.setText(carpeta)
         self.txt_carpeta.setToolTip(carpeta)
-        self.lbl_error_carpeta.setVisible(False)
+        if mostrar_aviso_restauracion:
+            self._mostrar_error_o_aviso_carpeta("folder_warning_reset")
+        else:
+            self._ocultar_error_carpeta()
+
+    def aplicar_preferencias_desde_config(self, config: Dict[str, Any]) -> None:
+        """Restaura el tipo de medio, las opciones por separado de vídeo y audio y la carpeta válida."""
+        carpeta_cruda = config.get("directorio_descargas")
+        habia_carpeta_invalida = bool(config.get("carpeta_restaurada_por_invalida", False))
+        if (
+            isinstance(carpeta_cruda, str)
+            and carpeta_cruda.strip()
+            and not es_carpeta_destino_valida(carpeta_cruda.strip())
+        ):
+            habia_carpeta_invalida = True
+
+        cfg = normalizar_configuracion_usuario(dict(config))
+        self._preferencias_por_tipo[TipoMedio.VIDEO] = {
+            "formato": str(cfg["video_formato"]),
+            "calidad": str(cfg["video_calidad"]),
+        }
+        self._preferencias_por_tipo[TipoMedio.AUDIO] = {
+            "formato": str(cfg["audio_formato"]),
+            "calidad": str(cfg["audio_calidad"]),
+        }
+
+        tipo_guardado = (
+            TipoMedio.AUDIO
+            if cfg.get("ultimo_tipo_medio") == TipoMedio.AUDIO.value
+            else TipoMedio.VIDEO
+        )
+        self._tipo_actual = tipo_guardado
+
+        self.cmb_tipo.blockSignals(True)
+        idx_tipo = self.cmb_tipo.findData(tipo_guardado.value)
+        if idx_tipo >= 0:
+            self.cmb_tipo.setCurrentIndex(idx_tipo)
+        self.cmb_tipo.blockSignals(False)
+
+        pref_activa = self._preferencias_por_tipo[tipo_guardado]
+        self._poblar_formatos(
+            tipo_guardado,
+            preservar_formato=pref_activa["formato"],
+            preservar_calidad=pref_activa["calidad"],
+        )
+
+        self.establecer_directorio_destino(
+            str(cfg["directorio_descargas"]),
+            mostrar_aviso_restauracion=habia_carpeta_invalida,
+        )
+        # Nunca restaurar URL ni nombre personalizado
+        self.txt_url.clear()
+        self.txt_nombre.clear()
+        self.lbl_error_url.setVisible(False)
+        self.lbl_chip.setText(t("waiting_url"))
+
+    def restablecer_opciones_predeterminadas(
+        self, directorio_predeterminado: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Restablece en el formulario el tipo de medio, formatos, calidades y carpeta predeterminados."""
+        cfg_base: Dict[str, Any] = {}
+        if directorio_predeterminado:
+            cfg_base["directorio_descargas"] = directorio_predeterminado
+        cfg_limpia = normalizar_configuracion_usuario(cfg_base)
+        self.aplicar_preferencias_desde_config(cfg_limpia)
+        return self.exportar_preferencias_descarga()
+
+    def exportar_preferencias_descarga(self) -> Dict[str, Any]:
+        """Exporta el estado actual de preferencias de descarga (sin URL ni nombre de archivo)."""
+        self._guardar_seleccion_actual_en_memoria()
+        carpeta_exportada = self._directorio_destino
+        if not es_carpeta_destino_valida(carpeta_exportada):
+            carpeta_exportada = normalizar_configuracion_usuario({})["directorio_descargas"]
+        return {
+            "ultimo_tipo_medio": self._tipo_actual.value,
+            "video_formato": self._preferencias_por_tipo[TipoMedio.VIDEO]["formato"],
+            "video_calidad": self._preferencias_por_tipo[TipoMedio.VIDEO]["calidad"],
+            "audio_formato": self._preferencias_por_tipo[TipoMedio.AUDIO]["formato"],
+            "audio_calidad": self._preferencias_por_tipo[TipoMedio.AUDIO]["calidad"],
+            "directorio_descargas": carpeta_exportada,
+        }
 
     def _abrir_carpeta(self) -> None:
         if os.path.exists(self._directorio_destino):
@@ -310,7 +484,7 @@ class FormularioDescarga(QFrame):
     def _al_pulsar_anadir(self) -> None:
         url = self.txt_url.text().strip()
         self.lbl_error_url.setVisible(False)
-        self.lbl_error_carpeta.setVisible(False)
+        self._ocultar_error_carpeta()
 
         # Validación sintáctica de URL
         if not url or not (url.startswith("http://") or url.startswith("https://")):
@@ -322,8 +496,7 @@ class FormularioDescarga(QFrame):
         # Validación de carpeta de destino
         destino = Path(self._directorio_destino)
         if not destino.exists() or not os.access(str(destino), os.W_OK):
-            self.lbl_error_carpeta.setText(t("folder_error_invalid"))
-            self.lbl_error_carpeta.setVisible(True)
+            self._mostrar_error_o_aviso_carpeta("folder_error_invalid")
             return
 
         # Saneamiento del nombre opcional
@@ -333,6 +506,8 @@ class FormularioDescarga(QFrame):
         tipo = TipoMedio(self.cmb_tipo.currentData())
         formato = self.cmb_formato.currentData()
         calidad = self.cmb_calidad.currentData()
+        self._tipo_actual = tipo
+        self._guardar_seleccion_actual_en_memoria()
         plataforma = resolver_plataforma(url=url)
 
         opciones = OpcionesDescarga(
@@ -371,7 +546,8 @@ class FormularioDescarga(QFrame):
         if not self.lbl_error_url.isHidden():
             self.lbl_error_url.setText(t("url_error_invalid"))
         if not self.lbl_error_carpeta.isHidden():
-            self.lbl_error_carpeta.setText(t("folder_error_invalid"))
+            clave_err = self._clave_error_carpeta or "folder_error_invalid"
+            self.lbl_error_carpeta.setText(t(clave_err))
 
         # Actualizar textos del combo tipo bloqueando señales para no reiniciar formato/calidad
         self.cmb_tipo.blockSignals(True)

@@ -12,6 +12,7 @@ from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal, Slot
 from ..domain.models import EstadoTrabajo, FaseTrabajo, TrabajoDescarga
 from ..domain.states import (
     actualizar_fase_trabajo,
+    ordenar_trabajos_canonicamente,
     reintentar_trabajo,
 )
 from .history_manager import GestorHistorial
@@ -138,7 +139,10 @@ class GestorCola(QObject):
     trabajo_anadido = Signal(str)
     trabajo_actualizado = Signal(str)
     trabajo_eliminado = Signal(str)
+    orden_cambiado = Signal()
     conteo_cambiado = Signal(int, int, int, int)  # total, en_espera, completados, errores
+    trabajo_completado_notificable = Signal(object)
+    trabajo_fallido_notificable = Signal(object)
     _iniciar_en_worker = Signal(object)
 
     def __init__(
@@ -180,14 +184,25 @@ class GestorCola(QObject):
 
         self._thread.start()
 
+    def _reordenar_trabajos(self, emitir_senal: bool = True) -> bool:
+        """Aplica el orden canónico a la lista interna y emite orden_cambiado si hubo reubicación."""
+        ids_antes = [t.id for t in self._trabajos]
+        self._trabajos = ordenar_trabajos_canonicamente(self._trabajos)
+        ids_despues = [t.id for t in self._trabajos]
+        cambio = ids_antes != ids_despues
+        if cambio and emitir_senal:
+            self.orden_cambiado.emit()
+        return cambio
+
     def inicializar_con_trabajos(self, trabajos_guardados: List[TrabajoDescarga]) -> None:
-        """Carga la lista inicial de trabajos desde persistencia."""
-        self._trabajos = list(trabajos_guardados)
+        """Carga la lista inicial de trabajos desde persistencia en orden canónico."""
+        self._trabajos = ordenar_trabajos_canonicamente(list(trabajos_guardados))
+        self.orden_cambiado.emit()
         self._emitir_cambio_conteo()
 
     @property
     def trabajos(self) -> List[TrabajoDescarga]:
-        """Devuelve una copia de la lista de trabajos actuales."""
+        """Devuelve una copia de la lista de trabajos actuales en orden canónico."""
         return list(self._trabajos)
 
     def obtener_trabajo(self, id_trabajo: str) -> Optional[TrabajoDescarga]:
@@ -239,8 +254,10 @@ class GestorCola(QObject):
             )
 
         self._trabajos.append(trabajo)
+        self._reordenar_trabajos(emitir_senal=False)
         # 1. Notificar a la UI de inmediato con estado EN_ESPERA antes de tocar disco o red
         self.trabajo_anadido.emit(trabajo.id)
+        self.orden_cambiado.emit()
         self._emitir_cambio_conteo()
 
         # 2. Persistir y despachar al hilo trabajador sin bloquear el alta visual
@@ -260,8 +277,10 @@ class GestorCola(QObject):
                 self._id_en_espera_retiro = None
 
             self._trabajos.remove(trabajo)
+            self._reordenar_trabajos(emitir_senal=False)
             self._guardar()
             self.trabajo_eliminado.emit(id_trabajo)
+            self.orden_cambiado.emit()
             self._emitir_cambio_conteo()
             self._procesar_siguiente()
 
@@ -275,19 +294,31 @@ class GestorCola(QObject):
             self._worker.cancelar()
         elif trabajo.status == EstadoTrabajo.EN_ESPERA:
             actualizar_fase_trabajo(trabajo, FaseTrabajo.CANCELADO)
+            self._reordenar_trabajos()
             self._guardar()
             self.trabajo_actualizado.emit(id_trabajo)
             self._emitir_cambio_conteo()
 
     def reintentar_trabajo(self, id_trabajo: str) -> None:
-        """Reinicia un trabajo fallido, cancelado o interrumpido."""
+        """Reinicia un trabajo fallido, cancelado o interrumpido colocándolo al final de las pendientes."""
         trabajo = self.obtener_trabajo(id_trabajo)
         if not trabajo:
             return
+        if trabajo.status not in (
+            EstadoTrabajo.ERROR,
+            EstadoTrabajo.CANCELADO,
+            EstadoTrabajo.INTERRUMPIDO,
+        ):
+            return
 
+        # Reubicar al final antes de cambiar a EN_ESPERA para que quede al final del grupo FIFO pendiente
+        self._trabajos.remove(trabajo)
+        self._trabajos.append(trabajo)
         reintentar_trabajo(trabajo)
+        self._reordenar_trabajos()
         self._guardar()
         self.trabajo_actualizado.emit(id_trabajo)
+        self.orden_cambiado.emit()
         self._emitir_cambio_conteo()
         self._procesar_siguiente()
 
@@ -307,8 +338,10 @@ class GestorCola(QObject):
 
         self._id_trabajo_activo = siguiente.id
         actualizar_fase_trabajo(siguiente, FaseTrabajo.PREPARANDO)
+        self._reordenar_trabajos()
         self._guardar()
         self.trabajo_actualizado.emit(siguiente.id)
+        self.orden_cambiado.emit()
         self._emitir_cambio_conteo()
 
         # Emitir señal con conexión encolada (Qt.QueuedConnection) hacia self._thread
@@ -363,6 +396,7 @@ class GestorCola(QObject):
             return
 
         actualizar_fase_trabajo(trabajo, fase)
+        self._reordenar_trabajos()
         self._guardar()
         self.trabajo_actualizado.emit(id_trabajo)
 
@@ -373,10 +407,13 @@ class GestorCola(QObject):
         if trabajo:
             actualizar_fase_trabajo(trabajo, FaseTrabajo.FINALIZADO)
             trabajo.output_path = ruta_salida
+            self._reordenar_trabajos()
             self.historial.registrar_trabajo_completado(trabajo)
             self._guardar()
             self.trabajo_actualizado.emit(id_trabajo)
+            self.orden_cambiado.emit()
             self._emitir_cambio_conteo()
+            self.trabajo_completado_notificable.emit(trabajo)
 
             self._id_en_espera_retiro = id_trabajo
             self._temporizador_finalizacion.start(5000)
@@ -392,8 +429,10 @@ class GestorCola(QObject):
             trabajo = self.obtener_trabajo(id_a_retirar)
             if trabajo and trabajo.status == EstadoTrabajo.COMPLETADO:
                 self._trabajos.remove(trabajo)
+                self._reordenar_trabajos(emitir_senal=False)
                 self._guardar()
                 self.trabajo_eliminado.emit(id_a_retirar)
+                self.orden_cambiado.emit()
                 self._emitir_cambio_conteo()
 
         self._procesar_siguiente()
@@ -404,9 +443,12 @@ class GestorCola(QObject):
 
         if trabajo:
             actualizar_fase_trabajo(trabajo, FaseTrabajo.ERROR, error_code=codigo, error_detail=detalle)
+            self._reordenar_trabajos()
             self._guardar()
             self.trabajo_actualizado.emit(id_trabajo)
+            self.orden_cambiado.emit()
             self._emitir_cambio_conteo()
+            self.trabajo_fallido_notificable.emit(trabajo)
 
         self._worker.fallido.emit(id_trabajo, codigo, detalle)
         self._procesar_siguiente()
@@ -417,8 +459,10 @@ class GestorCola(QObject):
 
         if trabajo:
             actualizar_fase_trabajo(trabajo, FaseTrabajo.CANCELADO)
+            self._reordenar_trabajos()
             self._guardar()
             self.trabajo_actualizado.emit(id_trabajo)
+            self.orden_cambiado.emit()
             self._emitir_cambio_conteo()
 
         self._worker.cancelado.emit(id_trabajo)

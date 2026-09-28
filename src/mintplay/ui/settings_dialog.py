@@ -20,7 +20,10 @@ from PySide6.QtWidgets import (
 )
 
 from ..services.diagnostics import DiagnosticoSistema, ejecutar_diagnostico
-from ..services.persistence import normalizar_configuracion_usuario
+from ..services.persistence import (
+    normalizar_configuracion_usuario,
+    restablecer_opciones_descarga,
+)
 from .i18n_manager import obtener_traductor, t
 from .theme import (
     MODOS_TEMA,
@@ -45,6 +48,7 @@ class DialogoAjustes(QDialog):
     """Diálogo de preferencias con selección de idioma, paleta de color y modo claro/oscuro en caliente."""
 
     configuracion_guardada = Signal(dict)
+    restablecer_opciones_solicitado = Signal()
 
     def __init__(self, config_actual: Dict[str, Any], parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -179,7 +183,46 @@ class DialogoAjustes(QDialog):
         fila_tema.addWidget(self.marco_tema)
         layout_gen.addLayout(fila_tema)
 
-        # 4. Carpeta predeterminada
+        # 4. Notificaciones de descargas: Control segmentado [Activadas | Desactivadas]
+        fila_notif = QHBoxLayout()
+        fila_notif.setSpacing(12)
+        self.lbl_notificaciones = QLabel(t("settings_notifications"))
+        self.lbl_notificaciones.setObjectName("etiquetaCampo")
+
+        self.marco_notificaciones = QFrame(self)
+        self.marco_notificaciones.setObjectName("selectorSegmentado")
+        layout_seg_notif = QHBoxLayout(self.marco_notificaciones)
+        layout_seg_notif.setContentsMargins(3, 3, 3, 3)
+        layout_seg_notif.setSpacing(4)
+
+        self.btn_notif_activas = QPushButton(t("settings_notifications_on"))
+        self.btn_notif_activas.setObjectName("btnSegmento")
+        self.btn_notif_activas.setCheckable(True)
+        self.btn_notif_activas.setFocusPolicy(Qt.StrongFocus)
+        self.btn_notif_activas.setCursor(Qt.PointingHandCursor)
+        self.btn_notif_activas.setAccessibleName(t("settings_notifications_on"))
+
+        self.btn_notif_inactivas = QPushButton(t("settings_notifications_off"))
+        self.btn_notif_inactivas.setObjectName("btnSegmento")
+        self.btn_notif_inactivas.setCheckable(True)
+        self.btn_notif_inactivas.setFocusPolicy(Qt.StrongFocus)
+        self.btn_notif_inactivas.setCursor(Qt.PointingHandCursor)
+        self.btn_notif_inactivas.setAccessibleName(t("settings_notifications_off"))
+
+        self.grupo_botones_notif = QButtonGroup(self)
+        self.grupo_botones_notif.setExclusive(True)
+        self.grupo_botones_notif.addButton(self.btn_notif_activas)
+        self.grupo_botones_notif.addButton(self.btn_notif_inactivas)
+
+        layout_seg_notif.addWidget(self.btn_notif_activas)
+        layout_seg_notif.addWidget(self.btn_notif_inactivas)
+
+        fila_notif.addWidget(self.lbl_notificaciones)
+        fila_notif.addStretch(1)
+        fila_notif.addWidget(self.marco_notificaciones)
+        layout_gen.addLayout(fila_notif)
+
+        # 5. Carpeta predeterminada y restablecimiento de opciones de descarga
         self.lbl_carpeta = QLabel(t("settings_default_folder"))
         self.lbl_carpeta.setObjectName("etiquetaCampo")
         layout_gen.addWidget(self.lbl_carpeta)
@@ -194,6 +237,23 @@ class DialogoAjustes(QDialog):
         fila_carpeta.addWidget(self.txt_carpeta, 1)
         fila_carpeta.addWidget(self.btn_examinar)
         layout_gen.addLayout(fila_carpeta)
+
+        fila_restablecer = QHBoxLayout()
+        fila_restablecer.setSpacing(10)
+        self.btn_restablecer_opciones = QPushButton(t("settings_reset_download_options"))
+        self.btn_restablecer_opciones.setObjectName("btnAccionTarjeta")
+        self.btn_restablecer_opciones.setCursor(Qt.PointingHandCursor)
+        self.btn_restablecer_opciones.setAccessibleName(t("settings_reset_download_options"))
+        self.btn_restablecer_opciones.clicked.connect(self.restablecer_opciones)
+
+        self.lbl_estado_restablecer = QLabel("")
+        self.lbl_estado_restablecer.setObjectName("etiquetaAyuda")
+        self.lbl_estado_restablecer.setVisible(False)
+
+        fila_restablecer.addWidget(self.btn_restablecer_opciones)
+        fila_restablecer.addWidget(self.lbl_estado_restablecer)
+        fila_restablecer.addStretch(1)
+        layout_gen.addLayout(fila_restablecer)
 
         layout.addWidget(self.grupo_general)
 
@@ -249,6 +309,8 @@ class DialogoAjustes(QDialog):
         self.btn_idioma_en.clicked.connect(lambda: self.seleccionar_idioma("en"))
         self.btn_tema_claro.clicked.connect(lambda: self.seleccionar_tema("light"))
         self.btn_tema_oscuro.clicked.connect(lambda: self.seleccionar_tema("dark"))
+        self.btn_notif_activas.clicked.connect(lambda: self.seleccionar_notificaciones(True))
+        self.btn_notif_inactivas.clicked.connect(lambda: self.seleccionar_notificaciones(False))
 
         # Sincronización bidireccional si el idioma o el modo cambian desde el encabezado
         self._traductor.idioma_cambiado.connect(self._al_cambiar_idioma_externo)
@@ -263,8 +325,10 @@ class DialogoAjustes(QDialog):
             self._config.get("tema", "dark"),
             self._config.get("paleta", "mint"),
         )
+        notif_activas = bool(self._config.get("notificaciones_activas", True))
         self._config["paleta"] = paleta
         self._config["tema"] = modo
+        self._config["notificaciones_activas"] = notif_activas
 
         self.btn_idioma_es.blockSignals(True)
         self.btn_idioma_en.blockSignals(True)
@@ -279,6 +343,13 @@ class DialogoAjustes(QDialog):
         self.btn_tema_oscuro.setChecked(modo == "dark")
         self.btn_tema_claro.blockSignals(False)
         self.btn_tema_oscuro.blockSignals(False)
+
+        self.btn_notif_activas.blockSignals(True)
+        self.btn_notif_inactivas.blockSignals(True)
+        self.btn_notif_activas.setChecked(notif_activas)
+        self.btn_notif_inactivas.setChecked(not notif_activas)
+        self.btn_notif_activas.blockSignals(False)
+        self.btn_notif_inactivas.blockSignals(False)
 
         for pid, btn in self.botones_paleta.items():
             es_sel = pid == paleta
@@ -317,6 +388,23 @@ class DialogoAjustes(QDialog):
 
     seleccionar_modo = seleccionar_tema
 
+    def seleccionar_notificaciones(self, activas: bool) -> None:
+        """Activa o desactiva las notificaciones del sistema al terminar o fallar descargas."""
+        self._config["notificaciones_activas"] = bool(activas)
+        self._sincronizar_controles_desde_config()
+        self.configuracion_guardada.emit(dict(self._config))
+
+    def restablecer_opciones(self) -> None:
+        """Restablece tipo de medio, formatos, calidades y carpeta predeterminada sin tocar tema, idioma ni cola."""
+        self._config = restablecer_opciones_descarga(self._config)
+        carpeta_def = str(self._config.get("directorio_descargas", ""))
+        self.txt_carpeta.setText(carpeta_def)
+        self.txt_carpeta.setToolTip(carpeta_def)
+        self.lbl_estado_restablecer.setText(f"✓ {t('settings_reset_download_options_done')}")
+        self.lbl_estado_restablecer.setVisible(True)
+        self.restablecer_opciones_solicitado.emit()
+        self.configuracion_guardada.emit(dict(self._config))
+
     def actualizar_tema(self, tema: str, paleta: Optional[str] = None) -> None:
         """Actualiza la hoja de estilos y muestras del diálogo de ajustes según paleta y modo."""
         paleta_norm, modo_norm = normalizar_preferencias_tema(
@@ -350,8 +438,19 @@ class DialogoAjustes(QDialog):
         self.btn_tema_claro.setAccessibleName(t("settings_theme_light"))
         self.btn_tema_oscuro.setText(t("settings_theme_dark"))
         self.btn_tema_oscuro.setAccessibleName(t("settings_theme_dark"))
+        self.lbl_notificaciones.setText(t("settings_notifications"))
+        self.btn_notif_activas.setText(t("settings_notifications_on"))
+        self.btn_notif_activas.setAccessibleName(t("settings_notifications_on"))
+        self.btn_notif_inactivas.setText(t("settings_notifications_off"))
+        self.btn_notif_inactivas.setAccessibleName(t("settings_notifications_off"))
         self.lbl_carpeta.setText(t("settings_default_folder"))
         self.btn_examinar.setText(t("btn_browse"))
+        self.btn_restablecer_opciones.setText(t("settings_reset_download_options"))
+        self.btn_restablecer_opciones.setAccessibleName(t("settings_reset_download_options"))
+        if not self.lbl_estado_restablecer.isHidden():
+            self.lbl_estado_restablecer.setText(
+                f"✓ {t('settings_reset_download_options_done')}"
+            )
         self.grupo_diag.setTitle(t("settings_diagnostics"))
         self.grupo_about.setTitle(t("settings_about"))
         self.lbl_disclaimer.setText(t("settings_disclaimer"))

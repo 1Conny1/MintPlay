@@ -23,14 +23,17 @@ from PySide6.QtWidgets import (
 
 from ..domain.models import EstadoTrabajo, OpcionesDescarga, TrabajoDescarga
 from ..services.persistence import (
+    es_carpeta_destino_valida,
     guardar_configuracion,
     normalizar_configuracion_usuario,
+    restablecer_opciones_descarga,
 )
 from ..services.queue_manager import GestorCola
 from ..services.runtime_paths import obtener_ruta_icono
 from .download_form import FormularioDescarga
 from .history_dialog import DialogoHistorial
 from .i18n_manager import GestorTraduccion, confirmar_accion_si_no, obtener_traductor, t
+from .notifications import GestorNotificaciones
 from .queue_panel import PanelCola
 from .settings_dialog import DialogoAjustes
 from .theme import (
@@ -55,7 +58,21 @@ class VentanaPrincipal(QMainWindow):
     ):
         super().__init__(parent)
         self.gestor = gestor_cola
+        carpeta_cruda = configuracion.get("directorio_descargas")
+        carpeta_fue_restaurada = bool(
+            configuracion.get("carpeta_restaurada_por_invalida", False)
+        )
+        if (
+            isinstance(carpeta_cruda, str)
+            and carpeta_cruda.strip()
+            and not es_carpeta_destino_valida(carpeta_cruda.strip())
+        ):
+            carpeta_fue_restaurada = True
+
         self.config = normalizar_configuracion_usuario(configuracion)
+        if carpeta_fue_restaurada:
+            self.config["carpeta_restaurada_por_invalida"] = True
+
         self._dialogo_historial: Optional[DialogoHistorial] = None
         self._dialogo_ajustes: Optional[DialogoAjustes] = None
         self.traductor: GestorTraduccion = obtener_traductor(self.config.get("idioma", "es"))
@@ -63,6 +80,18 @@ class VentanaPrincipal(QMainWindow):
 
         self.setWindowTitle(t("app_name"))
         self._configurar_icono()
+
+        # Gestor de notificaciones del sistema conectado a transiciones terminales verificadas
+        self.notificaciones = GestorNotificaciones(
+            self,
+            activas=bool(self.config.get("notificaciones_activas", True)),
+        )
+        self.gestor.trabajo_completado_notificable.connect(
+            self.notificaciones.notificar_completado
+        )
+        self.gestor.trabajo_fallido_notificable.connect(
+            self.notificaciones.notificar_fallido
+        )
 
         # Widget central y layout
         self.widget_central = QWidget(self)
@@ -84,7 +113,11 @@ class VentanaPrincipal(QMainWindow):
         tema_inicial = self.config.get("tema", "dark")
         paleta_inicial = self.config.get("paleta", "mint")
         dir_descargas = self.config.get("directorio_descargas", str(Path.home() / "Downloads"))
-        self.formulario = FormularioDescarga(dir_descargas, self)
+        self.formulario = FormularioDescarga(
+            dir_descargas,
+            self,
+            config_inicial=self.config,
+        )
         self.panel_cola = PanelCola(
             self.gestor,
             self,
@@ -269,18 +302,34 @@ class VentanaPrincipal(QMainWindow):
         y = geom.y() + (geom.height() - alto_final) // 2
         self.move(x, y)
 
+    def _sincronizar_preferencias_formulario_en_config(self) -> None:
+        """Sincroniza en memoria las opciones actuales de vídeo, audio y carpeta desde el formulario."""
+        prefs = self.formulario.exportar_preferencias_descarga()
+        self.config.update(prefs)
+
     def _al_solicitar_descarga(self, opciones: OpcionesDescarga, plataforma: str) -> None:
-        """Crea el trabajo a partir de las opciones inmutables y lo añade de inmediato a la cola."""
+        """Crea el trabajo a partir de las opciones inmutables, lo añade a la cola y persiste las opciones usadas."""
         t_clic = time.perf_counter()
         trabajo = TrabajoDescarga.desde_opciones(opciones, plataforma=plataforma)
         t_creado = time.perf_counter()
         self.gestor.registrar_inicio_clic(trabajo.id, t_clic=t_clic, t_objeto_creado=t_creado)
+        # 1. Insertar primero en la cola para no retrasar el alta visual ni el primer repintado
         self.gestor.anadir_trabajo(trabajo)
+        # 2. Guardar las opciones vigentes del formulario y la carpeta válida
+        self._sincronizar_preferencias_formulario_en_config()
+        guardar_configuracion(self.config)
+
+    def restablecer_opciones_descarga(self) -> None:
+        """Restablece las opciones del formulario y su configuración a los valores predeterminados."""
+        self.config = restablecer_opciones_descarga(self.config)
+        self.formulario.aplicar_preferencias_desde_config(self.config)
+        guardar_configuracion(self.config)
 
     def _alternar_idioma(self) -> None:
         nuevo = "en" if self.traductor.idioma == "es" else "es"
         self.traductor.cambiar_idioma(nuevo)
         self.config["idioma"] = nuevo
+        self._sincronizar_preferencias_formulario_en_config()
         guardar_configuracion(self.config)
 
     def _al_cambiar_idioma(self, nuevo_idioma: str) -> None:
@@ -309,18 +358,21 @@ class VentanaPrincipal(QMainWindow):
         nuevo_tema = "light" if tema_actual == "dark" else "dark"
         self.config["tema"] = nuevo_tema
         self._aplicar_tema(nuevo_tema, paleta_actual)
+        self._sincronizar_preferencias_formulario_en_config()
         guardar_configuracion(self.config)
 
     def cambiar_paleta(self, nueva_paleta: str) -> None:
         """Cambia la paleta de color conservando el modo actual y persiste."""
         modo_actual = self.config.get("tema", "dark")
         self._aplicar_tema(modo_actual, nueva_paleta)
+        self._sincronizar_preferencias_formulario_en_config()
         guardar_configuracion(self.config)
 
     def cambiar_modo_tema(self, nuevo_modo: str) -> None:
         """Cambia el modo claro/oscuro conservando la paleta actual y persiste."""
         paleta_actual = self.config.get("paleta", "mint")
         self._aplicar_tema(nuevo_modo, paleta_actual)
+        self._sincronizar_preferencias_formulario_en_config()
         guardar_configuracion(self.config)
 
     def _aplicar_tema(self, tema: str, paleta: Optional[str] = None) -> None:
@@ -363,8 +415,10 @@ class VentanaPrincipal(QMainWindow):
         return self._dialogo_historial
 
     def _abrir_ajustes(self) -> None:
+        self._sincronizar_preferencias_formulario_en_config()
         dlg = DialogoAjustes(self.config, self)
         self._dialogo_ajustes = dlg
+        dlg.restablecer_opciones_solicitado.connect(self.restablecer_opciones_descarga)
         dlg.configuracion_guardada.connect(self._al_actualizar_ajustes)
         try:
             dlg.exec()
@@ -376,6 +430,9 @@ class VentanaPrincipal(QMainWindow):
         tema_anterior = self.config.get("tema")
         paleta_anterior = self.config.get("paleta")
         self.config = normalizar_configuracion_usuario(dict(nuevos_ajustes))
+        self.notificaciones.establecer_activas(
+            bool(self.config.get("notificaciones_activas", True))
+        )
         guardar_configuracion(self.config)
 
         nuevo_idioma = self.config.get("idioma", "es")
@@ -405,5 +462,8 @@ class VentanaPrincipal(QMainWindow):
                 event.ignore()
                 return
 
+        self._sincronizar_preferencias_formulario_en_config()
+        guardar_configuracion(self.config)
+        self.notificaciones.cerrar()
         self.gestor.cerrar()
         event.accept()

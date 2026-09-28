@@ -138,3 +138,98 @@ def test_migracion_configuracion_antigua_y_recuperacion_paleta_invalida(tmp_path
         assert recargada_ocean["paleta"] == "ocean"
         assert recargada_ocean["tema"] == "dark"
 
+
+def test_persistencia_opciones_separadas_video_audio_notificaciones_y_restablecimiento(
+    tmp_path: Path,
+):
+    from mintplay.services.persistence import restablecer_opciones_descarga
+
+    with patch(
+        "mintplay.services.persistence.obtener_directorio_datos_usuario",
+        return_value=tmp_path,
+    ):
+        carpeta_valida = tmp_path / "mis_descargas"
+        carpeta_valida.mkdir()
+
+        guardar_configuracion(
+            {
+                "idioma": "en",
+                "paleta": "indigo",
+                "tema": "light",
+                "notificaciones_activas": False,
+                "ultimo_tipo_medio": "audio",
+                "video_formato": "mkv",
+                "video_calidad": "720p",
+                "audio_formato": "mp3",
+                "audio_calidad": "256",
+                "directorio_descargas": str(carpeta_valida),
+                "url": "https://no-debe-guardarse.example/video",
+                "custom_name": "secreto",
+            }
+        )
+
+        cargada = cargar_configuracion()
+        assert cargada["notificaciones_activas"] is False
+        assert cargada["ultimo_tipo_medio"] == "audio"
+        assert cargada["video_formato"] == "mkv"
+        assert cargada["video_calidad"] == "720p"
+        assert cargada["audio_formato"] == "mp3"
+        assert cargada["audio_calidad"] == "256"
+        assert cargada["directorio_descargas"] == str(carpeta_valida)
+        assert "url" not in cargada
+        assert "custom_name" not in cargada
+
+        # Opciones antiguas o incompatibles + carpeta eliminada -> fallback seguro + marca de aviso
+        carpeta_borrada = tmp_path / "carpeta_que_ya_no_existe"
+        ruta_cfg = tmp_path / "settings.json"
+        ruta_cfg.write_text(
+            json.dumps(
+                {
+                    "idioma": "es",
+                    "paleta": "sakura",
+                    "tema": "dark",
+                    "ultimo_tipo_medio": "tipo_invalido",
+                    "video_formato": "mp4",
+                    "video_calidad": "256",  # Bitrate de audio en formato de vídeo
+                    "audio_formato": "wav",
+                    "audio_calidad": "320",  # Bitrate MP3 en formato sin pérdida WAV
+                    "directorio_descargas": str(carpeta_borrada),
+                }
+            ),
+            encoding="utf-8",
+        )
+        recuperada = cargar_configuracion()
+        assert recuperada["ultimo_tipo_medio"] == "video"
+        assert recuperada["video_formato"] == "mp4"
+        assert recuperada["video_calidad"] == "best"
+        assert recuperada["audio_formato"] == "wav"
+        assert recuperada["audio_calidad"] == "lossless"
+        assert recuperada["carpeta_restaurada_por_invalida"] is True
+        assert Path(recuperada["directorio_descargas"]).exists()
+
+        # Restablecer opciones de descarga conserva idioma, paleta, tema y notificaciones
+        restablecida = restablecer_opciones_descarga(
+            {
+                "idioma": "en",
+                "paleta": "amber",
+                "tema": "light",
+                "notificaciones_activas": False,
+                "ultimo_tipo_medio": "audio",
+                "video_formato": "webm",
+                "video_calidad": "480p",
+                "audio_formato": "flac",
+                "audio_calidad": "lossless",
+                "directorio_descargas": str(carpeta_valida),
+            }
+        )
+        assert restablecida["idioma"] == "en"
+        assert restablecida["paleta"] == "amber"
+        assert restablecida["tema"] == "light"
+        assert restablecida["notificaciones_activas"] is False
+        assert restablecida["ultimo_tipo_medio"] == "video"
+        assert restablecida["video_formato"] == "mp4"
+        assert restablecida["video_calidad"] == "best"
+        assert restablecida["audio_formato"] == "mp3"
+        assert restablecida["audio_calidad"] == "192"
+
+
